@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { createClient } from "@supabase/supabase-js";
 
 // InstaFacts – Cloud-ready version (Supabase + Zapier) with local fallback
 // ----------------------------------------------------------------------
@@ -121,31 +122,33 @@ function createLocalDataLayer() {
 function demoSVG(text){return "data:image/svg+xml;utf8,"+encodeURIComponent(`<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 600 600'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0%' stop-color='#f58529'/><stop offset='50%' stop-color='#dd2a7b'/><stop offset='100%' stop-color='#8134af'/></linearGradient></defs><rect width='600' height='600' rx='40' fill='url(#g)'/><text x='50%' y='50%' text-anchor='middle' fill='white' font-size='48' font-family='Arial' dy='.3em'>${text}</text></svg>`);} 
 function demoSquare(){return "data:image/svg+xml;utf8,"+encodeURIComponent(`<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 600 600'><rect width='600' height='600' fill='#222'/><circle cx='300' cy='300' r='200' fill='#999'/><text x='50%' y='50%' text-anchor='middle' fill='white' font-size='42' font-family='Arial' dy='.3em'>Square Media</text></svg>`);} 
 
-// Supabase layer (loaded only if envs exist + package present)
 function useDataLayer() {
   const [layer, setLayer] = useState(null);
+
   useEffect(() => {
     (async () => {
-      const url = import.meta?.env?.VITE_SUPABASE_URL;
-      const key = import.meta?.env?.VITE_SUPABASE_ANON_KEY;
+      const url = import.meta.env.VITE_SUPABASE_URL as string | undefined;
+      const key = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
+
       if (url && key) {
         try {
-          // dynamic import so local preview still works without the package
-          const { createClient } = await import("@supabase/supabase-js");
           const sb = createClient(url, key);
           const supa = createSupabaseDataLayer(sb);
           setLayer(supa);
           return;
         } catch (e) {
-          console.warn("Supabase not available, falling back to local mode:", e);
+          console.warn("Supabase client init failed, falling back to local mode:", e);
         }
       }
+
       const local = createLocalDataLayer();
       setLayer(local);
     })();
   }, []);
+
   return layer;
 }
+
 
 function createSupabaseDataLayer(supabase){
   let currentUser = null;
