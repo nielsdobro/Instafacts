@@ -130,14 +130,27 @@ function useDataLayer() {
       const url = import.meta.env.VITE_SUPABASE_URL as string | undefined;
       const key = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
 
+      // 🔎 DEBUG: remove after it works
+      console.log("[InstaFacts] VITE_SUPABASE_URL:", JSON.stringify(url));
+      console.log("[InstaFacts] VITE_SUPABASE_ANON_KEY length:", key?.length ?? 0);
+
       if (url && key) {
         try {
           const sb = createClient(url, key);
+
+          // 🔎 DEBUG connectivity: try a light read from 'posts'
+          const { error } = await sb.from("posts").select("id").limit(1);
+          if (error) {
+            console.warn("[InstaFacts] Supabase select failed:", error.message);
+          } else {
+            console.log("[InstaFacts] Supabase connectivity OK");
+          }
+
           const supa = createSupabaseDataLayer(sb);
           setLayer(supa);
           return;
         } catch (e) {
-          console.warn("Supabase client init failed, falling back to local mode:", e);
+          console.warn("[InstaFacts] Supabase client init failed, falling back:", e);
         }
       }
 
