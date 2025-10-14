@@ -5,7 +5,7 @@ import { createClient } from "@supabase/supabase-js";
 // ----------------------------------------------------------------------
 // What’s new:
 // - Data layer abstraction with **Supabase mode** (auth, storage, realtime) and
-//   **Supabase mode** fallback (localStorage) so it runs in this canvas immediately.
+//   **Local mode** fallback (localStorage) so it runs in this canvas immediately.
 // - Public read (no login), login/signup for posting/commenting.
 // - New Post: vertical layout + square cropper (drag/zoom, press Enter to publish in caption).
 // - Like/Dislike on posts/comments (green/red), overlay on media bottom-right.
@@ -17,7 +17,7 @@ import { createClient } from "@supabase/supabase-js";
 //   1) Install: `npm i @supabase/supabase-js`
 //   2) Add env vars (Vite-style): VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY
 //   3) Deploy to Vercel/Netlify with these env vars set.
-// The app will auto-detect Supabase; otherwise uses Supabase mode for this preview.
+// The app will auto-detect Supabase; otherwise uses Local mode for this preview.
 
 // ===== Utilities =====
 const LS_KEYS = {
@@ -61,25 +61,18 @@ function useDataLayer() {
 
   useEffect(() => {
     (async () => {
-  try {
-    const url = import.meta.env.VITE_SUPABASE_URL;
-    const key = import.meta.env.VITE_SUPABASE_ANON_KEY;
-    if (!url || !key) throw new Error("Missing Supabase env vars");
-    const sb = window.supabase.createClient(url, key);
-    // quick connectivity check
-    const { error } = await sb.from('posts').select('id').limit(1);
-    if (error && error.code !== 'PGRST301') {
-      // PGRST301 can occur when table exists but RLS blocks select without anon; still acceptable
-      console.warn("[InstaFacts] Supabase select warning:", error.message);
-    }
-    const supa = createSupabaseDataLayer(sb);
-    setLayer(supa);
-  } catch (e) {
-    console.error("[InstaFacts] Supabase init failed:", e);
-    setInitError("Supabase configuration error. Please set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.");
-  }
-})();
-}, []);
+      try {
+        const url = import.meta.env.VITE_SUPABASE_URL as string | undefined;
+        const key = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
+        if (!url || !key) throw new Error("Missing Supabase env vars");
+        const sb = createClient(url, key);
+        const supa = createSupabaseDataLayer(sb);
+        setLayer(supa);
+      } catch (e) {
+        console.error("[InstaFacts] Supabase init failed:", e);
+        setInitError("Supabase configuration error. Please set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.");
+      }
+    })();}, []);
 
   return layer;
 }
@@ -196,21 +189,6 @@ function createSupabaseDataLayer(supabase){
       }));
     },
     async createPost({ file, caption, croppedDataURL }){
-// Safety: basic file validation
-if (file) {
-  const okTypes = ['image/jpeg','image/png','image/webp','video/mp4'];
-  if (!okTypes.includes(file.type)) {
-    throw new Error('Unsupported file type. Please upload JPG, PNG, WEBP, or MP4.');
-  }
-  const maxBytes = 25 * 1024 * 1024; // 25MB
-  if (file.size > maxBytes) {
-    throw new Error('File is too large. Max 25MB.');
-  }
-}
-if (caption && caption.length > 2200) {
-  caption = caption.slice(0, 2200);
-}
-
       if (!currentUser) throw new Error("Login required");
       let media_url=""; let media_type="image";
       if (file.type.startsWith("video")) media_type="video";
@@ -240,7 +218,7 @@ if (caption && caption.length > 2200) {
       if (error) throw error;
     },
     // Comments
-    async addComment({ postId, content }) {
+    async addComment({ postId, content }){
       if (!currentUser) throw new Error("Login required");
       const { error } = await supabase.from('comments').insert({ post_id: postId, user_id: currentUser.id, content: content.trim() });
       if (error) throw error;
@@ -398,7 +376,7 @@ export default function App(){
           />)}
         {data && route==='settings' && isAuthed && <AccountSettings user={profileFromUser(currentUser)} onSave={doUpdateAccount} />}
       </div>
-      <Footer note={data? (data.mode==='supabase'? 'Cloud mode (Supabase)': 'Supabase mode (demo)'): ''} />
+      <Footer note={data? (data.mode==='supabase'? 'Cloud mode (Supabase)': 'Local mode (demo)'): ''} />
     </div>
   );
 }
@@ -431,8 +409,24 @@ function resolveUsername(data, id){
 // ===== UI =====
 function TopBar({ currentUser, onSignOut }){
   return (
-    \1
-{appError && (<div className=\"bg-red-600 text-white text-sm p-2 text-center\">{appError}</div>)}
+    <header className="sticky top-0 z-20 bg-white/80 backdrop-blur border-b border-neutral-200">
+      <div className="max-w-2xl mx-auto px-4 py-3 flex items-center justify-between">
+        <a href="#/home" className="hover:opacity-90"><Logo size={26} /></a>
+        <div className="flex items-center gap-2 text-sm">
+          <a href="#/home" className="px-3 py-1.5 rounded-xl hover:bg-neutral-100">Home</a>
+          <a href="#/new" className="px-3 py-1.5 rounded-xl hover:bg-neutral-100">New Post</a>
+          {currentUser && <a href="#/profile" className="px-3 py-1.5 rounded-xl hover:bg-neutral-100">Profile</a>}
+          {currentUser ? (
+            <>
+              <a href="#/settings" aria-label="Account settings" className="p-1.5 rounded-xl hover:bg-neutral-100"><AccountIcon/></a>
+              <button onClick={onSignOut} className="px-3 py-1.5 rounded-xl bg-neutral-900 text-white hover:opacity-90">Log out</button>
+            </>
+          ) : (
+            <a href="#/login" className="px-3 py-1.5 rounded-xl bg-neutral-900 text-white">Log in</a>
+          )}
+        </div>
+      </div>
+    </header>
   );
 }
 function AccountIcon(){return (<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21a8 8 0 0 0-16 0"/><circle cx="12" cy="7" r="4"/></svg>);} 
@@ -595,7 +589,7 @@ function PostCard({ post, author, getUser, onAddComment, onAddReply, onReactPost
         )}
         {!isAuthed && <p className="text-xs text-neutral-500 mt-2">Log in to like or comment.</p>}
 
-        {/* Supabase mode shows comments list; in Supabase mode, extend to fetch joins if desired */}
+        {/* Local mode shows comments list; in Supabase mode, extend to fetch joins if desired */}
         {!!comments.length && (
           <div className="mt-3">
             {hidden>0 && !expanded && <button className="text-sm text-neutral-600 hover:underline" onClick={()=>setExpanded(true)}>Show more comments ({hidden})</button>}
@@ -822,8 +816,6 @@ function AccountSettings({ user, onSave }){
 function Footer({ note }){
   return (
     <footer className="mt-14 border-t border-neutral-200 py-8 text-center text-xs text-neutral-500">
-        
-
       <p>InstaFacts mock for a Generative AI course. {note}</p>
       <p className="mt-2">Zapier: Use Supabase app to insert into <code>posts</code>/<code>comments</code>. For a bot account, map a fixed <code>user_id</code>.</p>
     </footer>
