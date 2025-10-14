@@ -5,7 +5,7 @@ import { createClient } from "@supabase/supabase-js";
 // ----------------------------------------------------------------------
 // What’s new:
 // - Data layer abstraction with **Supabase mode** (auth, storage, realtime) and
-//   **Local mode** fallback (localStorage) so it runs in this canvas immediately.
+//   **Supabase mode** fallback (localStorage) so it runs in this canvas immediately.
 // - Public read (no login), login/signup for posting/commenting.
 // - New Post: vertical layout + square cropper (drag/zoom, press Enter to publish in caption).
 // - Like/Dislike on posts/comments (green/red), overlay on media bottom-right.
@@ -17,7 +17,7 @@ import { createClient } from "@supabase/supabase-js";
 //   1) Install: `npm i @supabase/supabase-js`
 //   2) Add env vars (Vite-style): VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY
 //   3) Deploy to Vercel/Netlify with these env vars set.
-// The app will auto-detect Supabase; otherwise uses Local mode for this preview.
+// The app will auto-detect Supabase; otherwise uses Supabase mode for this preview.
 
 // ===== Utilities =====
 const LS_KEYS = {
@@ -51,73 +51,7 @@ const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 //          toggleReactPost, toggleReactComment
 //          subscribe(cb) -> unsubscribe (Supabase only)
 
-function createLocalDataLayer() {
-  let users = loadLS(LS_KEYS.users, []);
-  let posts = loadLS(LS_KEYS.posts, []);
-  let currentUserId = loadLS(LS_KEYS.currentUserId, null);
-  const persist = () => { saveLS(LS_KEYS.users, users); saveLS(LS_KEYS.posts, posts); saveLS(LS_KEYS.currentUserId, currentUserId); };
 
-  const obj = {
-    mode: "local",
-    get currentUser(){ return users.find(u=>u.id===currentUserId)||null; },
-    async signUp({ username, password, bio }){
-      username = username.trim();
-      if (!username || !password) throw new Error("Username and password are required");
-      if (users.some(u=>u.username.toLowerCase()===username.toLowerCase())) throw new Error("Username already exists");
-      const u = { id: uid("user"), username, password, bio: bio||"", avatar: null };
-      users=[...users,u]; currentUserId=u.id; persist(); return u;
-    },
-    async signIn({ username, password }){
-      const u = users.find(x=>x.username.toLowerCase()===username.trim().toLowerCase());
-      if (!u || u.password!==password) throw new Error("Invalid credentials");
-      currentUserId=u.id; persist(); return u;
-    },
-    async signOut(){ currentUserId=null; persist(); },
-    async updateAccount({ username, bio }){
-      const cu = obj.currentUser; if (!cu) return;
-      if (users.some(u=>u.username.toLowerCase()===username.trim().toLowerCase() && u.id!==cu.id)) throw new Error("Username already taken");
-      users = users.map(u=>u.id===cu.id?{...u, username: username.trim(), bio}:u); persist();
-    },
-    async listPosts(){ posts = loadLS(LS_KEYS.posts, posts)||[]; return [...posts].sort((a,b)=>b.createdAt-a.createdAt); },
-    async createPost({ file, caption, croppedDataURL }){
-      const cu = obj.currentUser; if (!cu) throw new Error("Login required");
-      const mediaType = file.type.startsWith("video")?"video":"image";
-      const mediaDataUrl = croppedDataURL || await readFileAsDataURL(file);
-      const p = { id: uid("post"), userId: cu.id, mediaType, media_url: mediaDataUrl, caption: caption.trim(), createdAt: Date.now(), comments: [], likesUp: [], likesDown: [], edited:false };
-      posts=[p,...posts]; persist(); return p;
-    },
-    async updatePost({ postId, caption }){
-      const cu=obj.currentUser; posts=posts.map(p=>p.id===postId&&p.userId===cu?.id?{...p, caption: caption.trim(), edited:true}:p); persist();
-    },
-    async deletePost({ postId }){ const cu=obj.currentUser; posts=posts.filter(p=>!(p.id===postId&&p.userId===cu?.id)); persist(); },
-    async addComment({ postId, content }){
-      const cu=obj.currentUser; if (!cu) throw new Error("Login required");
-      posts=posts.map(p=>{ if (p.id!==postId) return p; const c={ id:uid("c"), userId:cu.id, content:content.trim(), createdAt:Date.now(), replies:[], likesUp:[], likesDown:[], edited:false }; return { ...p, comments:[...(p.comments||[]), c] }; }); persist();
-    },
-    async addReply({ postId, commentId, content }){
-      const cu=obj.currentUser; if (!cu) throw new Error("Login required");
-      posts=posts.map(p=>{ if (p.id!==postId) return p; const comments=(p.comments||[]).map(c=>{ if (c.id!==commentId) return c; const r={ id:uid("r"), userId:cu.id, content:content.trim(), createdAt:Date.now(), replies:[], likesUp:[], likesDown:[], edited:false }; return { ...c, replies:[...(c.replies||[]), r] }; }); return { ...p, comments }; }); persist();
-    },
-    async editComment({ postId, commentId, replyId, content }){
-      const cu=obj.currentUser; posts=posts.map(p=>{ if (p.id!==postId) return p; const comments=(p.comments||[]).map(c=>{ if (c.id!==commentId) return c; if (!replyId){ if (c.userId!==cu?.id) return c; return { ...c, content:content.trim(), edited:true }; } const replies=(c.replies||[]).map(r=> r.id===replyId && r.userId===cu?.id? { ...r, content:content.trim(), edited:true }: r); return { ...c, replies }; }); return { ...p, comments }; }); persist();
-    },
-    async deleteComment({ postId, commentId, replyId }){
-      const cu=obj.currentUser; posts=posts.map(p=>{ if (p.id!==postId) return p; let comments=(p.comments||[]).map(c=>({...c,replies:c.replies||[]})); if (!replyId){ comments=comments.filter(c=>!(c.id===commentId && c.userId===cu?.id)); } else { comments=comments.map(c=> c.id!==commentId? c: { ...c, replies:(c.replies||[]).filter(r=>!(r.id===replyId && r.userId===cu?.id)) }); } return { ...p, comments }; }); persist();
-    },
-    async toggleReactPost({ postId, type }){
-      const cu=obj.currentUser; if (!cu) return; posts=posts.map(p=>{ if (p.id!==postId) return p; const up=new Set(p.likesUp||[]), down=new Set(p.likesDown||[]); if (type==='up'){ up.has(cu.id)?up.delete(cu.id):(up.add(cu.id),down.delete(cu.id)); } else { down.has(cu.id)?down.delete(cu.id):(down.add(cu.id),up.delete(cu.id)); } return { ...p, likesUp:[...up], likesDown:[...down] }; }); persist();
-    },
-    async toggleReactComment({ postId, commentId, replyId, type }){
-      const cu=obj.currentUser; if (!cu) return; posts=posts.map(p=>{ if (p.id!==postId) return p; const comments=(p.comments||[]).map(c=>{ if (c.id!==commentId) return c; const target = replyId? (c.replies||[]) : [c]; const updated=target.map(item=>{ const up=new Set(item.likesUp||[]), down=new Set(item.likesDown||[]); if (type==='up'){ up.has(cu.id)?up.delete(cu.id):(up.add(cu.id),down.delete(cu.id)); } else { down.has(cu.id)?down.delete(cu.id):(down.add(cu.id),up.delete(cu.id)); } return { ...item, likesUp:[...up], likesDown:[...down] }; }); return replyId? { ...c, replies:updated } : updated[0]; }); return { ...p, comments }; }); persist();
-    },
-    // No realtime in local
-    subscribe(){ return () => {}; },
-
-    // Demo seed so canvas isn’t empty
-    seed(){ if (users.length||posts.length) return; const a={id:uid("user"),username:"alice",password:"alice",bio:"Curious about facts."}; const b={id:uid("user"),username:"bob",password:"bob",bio:"Sharing daily moments."}; users=[a,b]; posts=[{id:uid("post"),userId:a.id,mediaType:"image",media_url:demoSVG("InstaFacts"),caption:"Welcome to InstaFacts, a demo feed.",createdAt:Date.now()-3600000,comments:[],likesUp:[],likesDown:[],edited:false},{id:uid("post"),userId:b.id,mediaType:"image",media_url:demoSquare(),caption:"Square preview demo.",createdAt:Date.now()-1800000,comments:[],likesUp:[],likesDown:[],edited:false}]; persist(); currentUserId=a.id; }
-  };
-  return obj;
-}
 
 function demoSVG(text){return "data:image/svg+xml;utf8,"+encodeURIComponent(`<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 600 600'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0%' stop-color='#f58529'/><stop offset='50%' stop-color='#dd2a7b'/><stop offset='100%' stop-color='#8134af'/></linearGradient></defs><rect width='600' height='600' rx='40' fill='url(#g)'/><text x='50%' y='50%' text-anchor='middle' fill='white' font-size='48' font-family='Arial' dy='.3em'>${text}</text></svg>`);} 
 function demoSquare(){return "data:image/svg+xml;utf8,"+encodeURIComponent(`<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 600 600'><rect width='600' height='600' fill='#222'/><circle cx='300' cy='300' r='200' fill='#999'/><text x='50%' y='50%' text-anchor='middle' fill='white' font-size='42' font-family='Arial' dy='.3em'>Square Media</text></svg>`);} 
@@ -127,35 +61,25 @@ function useDataLayer() {
 
   useEffect(() => {
     (async () => {
-      const url = import.meta.env.VITE_SUPABASE_URL as string | undefined;
-      const key = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
-
-      // 🔎 DEBUG: remove after it works
-
-      if (url && key) {
-        try {
-          const sb = createClient(url, key);
-
-          // 🔎 DEBUG connectivity: try a light read from 'posts'
-          const { error } = await sb.from("posts").select("id").limit(1);
-          if (error) {
-            console.warn("[InstaFacts] Supabase select failed:", error.message);
-          } else {
-            console.log("[InstaFacts] Supabase connectivity OK");
-          }
-
-          const supa = createSupabaseDataLayer(sb);
-          setLayer(supa);
-          return;
-        } catch (e) {
-          console.warn("[InstaFacts] Supabase client init failed, falling back:", e);
-        }
-      }
-
-      const local = createLocalDataLayer();
-      setLayer(local);
-    })();
-  }, []);
+  try {
+    const url = import.meta.env.VITE_SUPABASE_URL;
+    const key = import.meta.env.VITE_SUPABASE_ANON_KEY;
+    if (!url || !key) throw new Error("Missing Supabase env vars");
+    const sb = window.supabase.createClient(url, key);
+    // quick connectivity check
+    const { error } = await sb.from('posts').select('id').limit(1);
+    if (error && error.code !== 'PGRST301') {
+      // PGRST301 can occur when table exists but RLS blocks select without anon; still acceptable
+      console.warn("[InstaFacts] Supabase select warning:", error.message);
+    }
+    const supa = createSupabaseDataLayer(sb);
+    setLayer(supa);
+  } catch (e) {
+    console.error("[InstaFacts] Supabase init failed:", e);
+    setInitError("Supabase configuration error. Please set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.");
+  }
+})();
+}, []);
 
   return layer;
 }
@@ -198,7 +122,7 @@ function createSupabaseDataLayer(supabase){
         .from('posts')
         .select('*')
         .order('created_at', { ascending:false })
-        .limit(100);
+        .limit(50);
       if (postErr) throw postErr;
       if (!postRows?.length) return [];
 
@@ -272,6 +196,21 @@ function createSupabaseDataLayer(supabase){
       }));
     },
     async createPost({ file, caption, croppedDataURL }){
+// Safety: basic file validation
+if (file) {
+  const okTypes = ['image/jpeg','image/png','image/webp','video/mp4'];
+  if (!okTypes.includes(file.type)) {
+    throw new Error('Unsupported file type. Please upload JPG, PNG, WEBP, or MP4.');
+  }
+  const maxBytes = 25 * 1024 * 1024; // 25MB
+  if (file.size > maxBytes) {
+    throw new Error('File is too large. Max 25MB.');
+  }
+}
+if (caption && caption.length > 2200) {
+  caption = caption.slice(0, 2200);
+}
+
       if (!currentUser) throw new Error("Login required");
       let media_url=""; let media_type="image";
       if (file.type.startsWith("video")) media_type="video";
@@ -301,7 +240,7 @@ function createSupabaseDataLayer(supabase){
       if (error) throw error;
     },
     // Comments
-    async addComment({ postId, content }){
+    async addComment({ postId, content }) {
       if (!currentUser) throw new Error("Login required");
       const { error } = await supabase.from('comments').insert({ post_id: postId, user_id: currentUser.id, content: content.trim() });
       if (error) throw error;
@@ -404,11 +343,9 @@ export default function App(){
     setTimeout(refresh, 0);
   };
   const doUpdateAccount = async (p)=>{ await data.updateAccount(p); };
-  const doCreate = async (p)=>{ await data.createPost(p);
-// Go back to main page and refresh to show the new post
-window.location.hash = '#/home';
-await refresh();
- };
+  \1await data.createPost(p);
+    window.location.hash = '#/home';
+    await refresh();\3
   const doUpdatePost = async (id, caption)=>{ await data.updatePost({ postId:id, caption }); await refresh(); };
   const doDeletePost = async (id)=>{ await data.deletePost({ postId:id }); await refresh(); };
   const doAddComment = async (postId, content)=>{ await data.addComment({ postId, content }); await refresh(); };
@@ -461,7 +398,7 @@ await refresh();
           />)}
         {data && route==='settings' && isAuthed && <AccountSettings user={profileFromUser(currentUser)} onSave={doUpdateAccount} />}
       </div>
-      <Footer note={data? (data.mode==='supabase'? 'Cloud mode (Supabase)': 'Local mode (demo)'): ''} />
+      <Footer note={data? (data.mode==='supabase'? 'Cloud mode (Supabase)': 'Supabase mode (demo)'): ''} />
     </div>
   );
 }
@@ -494,24 +431,8 @@ function resolveUsername(data, id){
 // ===== UI =====
 function TopBar({ currentUser, onSignOut }){
   return (
-    <header className="sticky top-0 z-20 bg-white/80 backdrop-blur border-b border-neutral-200">
-      <div className="max-w-2xl mx-auto px-4 py-3 flex items-center justify-between">
-        <a href="#/home" className="hover:opacity-90"><Logo size={26} /></a>
-        <div className="flex items-center gap-2 text-sm">
-          <a href="#/home" className="px-3 py-1.5 rounded-xl hover:bg-neutral-100">Home</a>
-          <a href="#/new" className="px-3 py-1.5 rounded-xl hover:bg-neutral-100">New Post</a>
-          {currentUser && <a href="#/profile" className="px-3 py-1.5 rounded-xl hover:bg-neutral-100">Profile</a>}
-          {currentUser ? (
-            <>
-              <a href="#/settings" aria-label="Account settings" className="p-1.5 rounded-xl hover:bg-neutral-100"><AccountIcon/></a>
-              <button onClick={onSignOut} className="px-3 py-1.5 rounded-xl bg-neutral-900 text-white hover:opacity-90">Log out</button>
-            </>
-          ) : (
-            <a href="#/login" className="px-3 py-1.5 rounded-xl bg-neutral-900 text-white">Log in</a>
-          )}
-        </div>
-      </div>
-    </header>
+    \1
+{appError && (<div className=\"bg-red-600 text-white text-sm p-2 text-center\">{appError}</div>)}
   );
 }
 function AccountIcon(){return (<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21a8 8 0 0 0-16 0"/><circle cx="12" cy="7" r="4"/></svg>);} 
@@ -674,7 +595,7 @@ function PostCard({ post, author, getUser, onAddComment, onAddReply, onReactPost
         )}
         {!isAuthed && <p className="text-xs text-neutral-500 mt-2">Log in to like or comment.</p>}
 
-        {/* Local mode shows comments list; in Supabase mode, extend to fetch joins if desired */}
+        {/* Supabase mode shows comments list; in Supabase mode, extend to fetch joins if desired */}
         {!!comments.length && (
           <div className="mt-3">
             {hidden>0 && !expanded && <button className="text-sm text-neutral-600 hover:underline" onClick={()=>setExpanded(true)}>Show more comments ({hidden})</button>}
@@ -901,6 +822,8 @@ function AccountSettings({ user, onSave }){
 function Footer({ note }){
   return (
     <footer className="mt-14 border-t border-neutral-200 py-8 text-center text-xs text-neutral-500">
+        
+
       <p>InstaFacts mock for a Generative AI course. {note}</p>
       <p className="mt-2">Zapier: Use Supabase app to insert into <code>posts</code>/<code>comments</code>. For a bot account, map a fixed <code>user_id</code>.</p>
     </footer>
