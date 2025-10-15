@@ -109,85 +109,86 @@ function createSupabaseDataLayer(supabase){
       if (error) throw error;
     },
     // Posts
-    async listPosts(){
-      // 1) posts (newest first)
-      const { data: postRows, error: postErr } = await supabase
-        .from('posts')
+
+async listPosts(){
+  // 1) posts (newest first)
+  const { data: postRows, error: postErr } = await supabase
+    .from('posts')
+    .select('*')
+    .order('created_at', { ascending:false })
+    .limit(50);
+  if (postErr) throw postErr;
+  if (!postRows?.length) return [];
+
+  const postIds = postRows.map(p => p.id);
+
+  // 2) comments for these posts
+  const { data: commentRows, error: cErr } = await supabase
+    .from('comments')
+    .select('*')
+    .in('post_id', postIds)
+    .order('created_at', { ascending:true });
+  if (cErr) throw cErr;
+
+  // 3) replies for these comments
+  const commentIds = (commentRows || []).map(c => c.id);
+  const { data: replyRows, error: rErr } = commentIds.length
+    ? await supabase
+        .from('replies')
         .select('*')
-        .order('created_at', { ascending:false })
-        .limit(50);
-      if (postErr) throw postErr;
-      if (!postRows?.length) return [];
+        .in('comment_id', commentIds)
+        .order('created_at', { ascending:true })
+    : { data: [], error: null };
+  if (rErr) throw rErr;
 
-      const postIds = postRows.map(p => p.id);
+  // 4) shape replies per comment
+  const repliesByComment = new Map<string, any[]>();
+  for (const r of replyRows || []) {
+    const arr = repliesByComment.get(r.comment_id) || [];
+    arr.push({
+      id: r.id,
+      userId: r.user_id,
+      content: r.content,
+      createdAt: new Date(r.created_at).getTime(),
+      replies: [],
+      likesUp: r.likes_up || [],
+      likesDown: r.likes_down || [],
+      edited: !!r.edited,
+    });
+    repliesByComment.set(r.comment_id, arr);
+  }
 
-      // 2) comments for these posts
-      const { data: commentRows, error: cErr } = await supabase
-        .from('comments')
-        .select('*')
-        .in('post_id', postIds)
-        .order('created_at', { ascending:true });
-      if (cErr) throw cErr;
+  // 5) shape comments per post
+  const commentsByPost = new Map<string, any[]>();
+  for (const c of commentRows || []) {
+    const arr = commentsByPost.get(c.post_id) || [];
+    arr.push({
+      id: c.id,
+      userId: c.user_id,
+      content: c.content,
+      createdAt: new Date(c.created_at).getTime(),
+      replies: repliesByComment.get(c.id) || [],
+      likesUp: c.likes_up || [],
+      likesDown: c.likes_down || [],
+      edited: !!c.edited,
+    });
+    commentsByPost.set(c.post_id, arr);
+  }
 
-      // 3) replies for these comments
-      const commentIds = (commentRows || []).map(c => c.id);
-      const { data: replyRows, error: rErr } = commentIds.length
-        ? await supabase
-            .from('replies')
-            .select('*')
-            .in('comment_id', commentIds)
-            .order('created_at', { ascending:true })
-        : { data: [], error: null };
-      if (rErr) throw rErr;
-
-      // 4) shape replies per comment
-      const repliesByComment = new Map();
-      for (const r of replyRows || []) {
-        const arr = repliesByComment.get(r.comment_id) || [];
-        arr.push({
-          id: r.id,
-          userId: r.user_id,
-          content: r.content,
-          createdAt: new Date(r.created_at).getTime(),
-          replies: [],
-          likesUp: r.likes_up || [],
-          likesDown: r.likes_down || [],
-          edited: !!r.edited,
-        });
-        repliesByComment.set(r.comment_id, arr);
-      }
-
-      // 5) shape comments per post
-      const commentsByPost = new Map();
-      for (const c of commentRows || []) {
-        const arr = commentsByPost.get(c.post_id) || [];
-        arr.push({
-          id: c.id,
-          userId: c.user_id,
-          content: c.content,
-          createdAt: new Date(c.created_at).getTime(),
-          replies: repliesByComment.get(c.id) || [],
-          likesUp: c.likes_up || [],
-          likesDown: c.likes_down || [],
-          edited: !!c.edited,
-        });
-        commentsByPost.set(c.post_id, arr);
-      }
-
-      // 6) final map to UI shape
-      return postRows.map(row => ({
-        id: row.id,
-        userId: row.user_id,
-        mediaType: row.media_type,
-        media_url: row.media_url,
-        caption: row.caption,
-        createdAt: new Date(row.created_at).getTime(),
-        comments: commentsByPost.get(row.id) || [],
-        likesUp: row.likes_up || [],
-        likesDown: row.likes_down || [],
-        edited: !!row.edited,
-      }));
-    },
+  // 6) final map to UI shape
+  return postRows.map(row => ({
+    id: row.id,
+    userId: row.user_id,
+    mediaType: row.media_type,
+    media_url: row.media_url,
+    caption: row.caption,
+    createdAt: new Date(row.created_at).getTime(),
+    comments: commentsByPost.get(row.id) || [],
+    likesUp: row.likes_up || [],
+    likesDown: row.likes_down || [],
+    edited: !!row.edited,
+  }));
+},
     async createPost({ file, caption, croppedDataURL }){
       if (!currentUser) throw new Error("Login required");
       let media_url=""; let media_type="image";
