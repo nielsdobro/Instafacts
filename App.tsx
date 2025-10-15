@@ -104,7 +104,14 @@ async function createSupabaseLayer(supabase:any, adminEmail?:string): Promise<Da
       return posts.map((p:any)=>({ id:p.id, userId:p.user_id, caption:p.caption, createdAt:new Date(p.created_at).getTime(), media_urls:p.media_urls||[], mediaTypes:p.media_types||[], comments: byPost.get(p.id)||[], likesUp:p.likes_up||[], likesDown:p.likes_down||[], edited: !!p.edited }));
     },
     async getProfile(id:string){ return await _getProfile(id); },
-    async updateProfile({ username, bio }){\n      const u = await getUser();\n      if (!u) throw new Error('Login required');\n      const { error } = await supabase.from('profiles')\n        .upsert({ id: u.id, username, bio: bio||'', email: u.email }, { onConflict: 'id' });\n      if (error) throw error;\n      cache.delete(u.id);\n    },
+    async updateProfile({ username, bio }){
+      const u = await getUser();
+      if (!u) throw new Error('Login required');
+      const { error } = await supabase.from('profiles')
+        .upsert({ id: u.id, username, bio: bio||'', email: u.email }, { onConflict: 'id' });
+      if (error) throw error;
+      cache.delete(u.id);
+    },
     async createPost({ files, caption }){
       const u = await getUser();
       if (!u) throw new Error('Login required');
@@ -185,7 +192,14 @@ function createLocalLayer(): DataLayer{
     async signOut(){ state.currentUser = null; },
     async listPosts(){ return state.posts; },
     async getProfile(id:string){ return state.profiles.get(id) || { id, username:id, bio:'' }; },
-    async updateProfile({ username, bio }){\n      const u = await getUser();\n      if (!u) throw new Error('Login required');\n      const { error } = await supabase.from('profiles')\n        .upsert({ id: u.id, username, bio: bio||'', email: u.email }, { onConflict: 'id' });\n      if (error) throw error;\n      cache.delete(u.id);\n    },
+    async updateProfile({ username, bio }){
+      const u = await getUser();
+      if (!u) throw new Error('Login required');
+      const { error } = await supabase.from('profiles')
+        .upsert({ id: u.id, username, bio: bio||'', email: u.email }, { onConflict: 'id' });
+      if (error) throw error;
+      cache.delete(u.id);
+    },
     async createPost({ files, caption }){ const urls: string[] = []; const types: ("image"|"video")[] = []; for (const f of files){ if (!f) continue; const isVideo = f.type.startsWith('video'); urls.push(URL.createObjectURL(f)); types.push(isVideo? 'video':'image'); } state.posts = [{ id:uid('p'), userId: state.currentUser?.id||'user_local', caption, createdAt: Date.now(), media_urls: urls, mediaTypes: types, comments:[], likesUp:[], likesDown:[], edited:false }, ...state.posts ]; },
     async addComment({ postId, content }){ state.posts = state.posts.map(p=> p.id===postId? { ...p, comments:[...p.comments, { id:uid('c'), userId: state.currentUser?.id||'user_local', content, createdAt:Date.now(), replies:[], likesUp:[], likesDown:[] } ] } : p ); },
     async updatePost({ postId, caption }){ state.posts = state.posts.map(p=> p.id===postId? { ...p, caption, edited:true } : p ); },
@@ -742,6 +756,7 @@ function ProfileEditor({ loadProfile, onSave }:{ loadProfile: ()=>Promise<Profil
 function Footer() { return <footer className="text-center text-xs text-neutral-400 py-6">InstaFacts</footer>; }
 
 export default App;
+
 
 
 
