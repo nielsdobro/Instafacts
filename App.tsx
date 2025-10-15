@@ -266,8 +266,18 @@ function LoginCard({ onSignIn, onSignUp }:{ onSignIn:(p:{email:string,password:s
   const [mode,setMode]=useState<'signin'|'signup'>('signin');
   const [email,setEmail]=useState('');
   const [password,setPassword]=useState('');
-  const submit=()=>{ if(mode==='signin') onSignIn({ email, password }); else onSignUp({ email, password }); };
+  const [showPwd,setShowPwd]=useState(false);
+  const [err,setErr] = useState('');
+  const ADMIN_EMAIL = (import.meta as any).env?.VITE_ADMIN_EMAIL as string | undefined;
+  const isEmail=(v:string)=>/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
+  const submit=()=>{
+    setErr('');
+    if (!isEmail(email)) { setErr('Please enter a valid email address'); return; }
+    if (!password) { setErr('Password is required'); return; }
+    if(mode==='signin') onSignIn({ email, password }); else onSignUp({ email, password });
+  };
   const onKeyDown=(e:React.KeyboardEvent)=>{ if(e.key==='Enter'){ e.preventDefault(); submit(); } };
+  const useAdmin = ()=>{ if (ADMIN_EMAIL) setEmail(ADMIN_EMAIL); };
   return (
     <div className="mt-12 bg-white border border-neutral-200 rounded-3xl p-6 shadow-sm" onKeyDown={onKeyDown}>
       <div className="flex items-center justify-between mb-4">
@@ -278,17 +288,25 @@ function LoginCard({ onSignIn, onSignUp }:{ onSignIn:(p:{email:string,password:s
         </div>
       </div>
       <div className="grid gap-3">
-        <label className="text-sm">Email
+        <label className="text-sm">Email address
           <input className="mt-1 w-full border border-neutral-300 rounded-xl px-3 py-2" value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@example.com"/>
         </label>
+        <div className="text-xs text-neutral-500 -mt-1 flex items-center justify-between">
+          <span>Use your email and a password.</span>
+          <button type="button" className={classNames('underline', ADMIN_EMAIL? 'text-neutral-600 hover:text-neutral-800':'opacity-40 cursor-not-allowed')} onClick={useAdmin}>Use admin email</button>
+        </div>
         <label className="text-sm">Password
-          <input className="mt-1 w-full border border-neutral-300 rounded-xl px-3 py-2" type="password" value={password} onChange={e=>setPassword(e.target.value)}/>
+          <div className="mt-1 flex items-center gap-2">
+            <input className="flex-1 border border-neutral-300 rounded-xl px-3 py-2" type={showPwd? 'text':'password'} value={password} onChange={e=>setPassword(e.target.value)}/>
+            <button type="button" className="text-xs px-2 py-1 rounded-lg border border-neutral-300 hover:bg-neutral-50" onClick={()=>setShowPwd(s=>!s)}>{showPwd? 'Hide':'Show'}</button>
+          </div>
         </label>
+        {err && <div className="text-xs text-red-600">{err}</div>}
         <div className="flex items-center gap-2 mt-2">
           <button onClick={submit} className="px-4 py-2 rounded-xl bg-neutral-900 text-white">{mode==='signin'? 'Log in':'Create account'}</button>
         </div>
       </div>
-      <p className="mt-4 text-xs text-neutral-500">Set VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY, and optional VITE_ADMIN_EMAIL in your Vercel env vars.</p>
+      <p className="mt-4 text-xs text-neutral-500">Tip: if you set VITE_ADMIN_EMAIL in Vercel, click “Use admin email” to autofill.</p>
     </div>
   );
 }
@@ -426,6 +444,7 @@ function PostCard({ post, author, isAuthed, currentUserId, onAddComment, onReact
   const mediaTypes = post.mediaTypes;
   const mediaCount = media_urls.length;
   const [slide, setSlide] = useState(0);
+  const [mediaError, setMediaError] = useState(false);
 
   const comments = Array.isArray(post.comments) ? post.comments : [];
   const shown = expanded ? comments : comments.slice(-2);
@@ -456,10 +475,14 @@ function PostCard({ post, author, isAuthed, currentUserId, onAddComment, onReact
 
       <div className="relative w-full" style={{ paddingTop:'100%' }}>
         <div className="absolute inset-0 bg-black">
-          {mediaTypes[slide]==='video' ? (
-            <video src={media_urls[slide]} className="w-full h-full object-cover" controls playsInline />
+          {!media_urls[slide] || mediaError ? (
+            <div className="w-full h-full flex items-center justify-center bg-neutral-200 text-neutral-500">
+              No media
+            </div>
+          ) : mediaTypes[slide]==='video' ? (
+            <video src={media_urls[slide]} className="w-full h-full object-cover" controls playsInline onError={()=>setMediaError(true)} />
           ) : (
-            <img src={media_urls[slide]} alt="Post media" className="w-full h-full object-cover" />
+            <img src={media_urls[slide]} alt="Post media" className="w-full h-full object-cover" onError={()=>setMediaError(true)} />
           )}
           {mediaCount > 1 && (
             <div className="absolute top-2 left-1/2 -translate-x-1/2 flex gap-2 z-10">
