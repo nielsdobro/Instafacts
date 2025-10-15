@@ -222,7 +222,8 @@ function createLocalLayer(): DataLayer{
   const data = useDataLayer();
   const [route, setRoute] = useState<string>(()=>parseHash());
   const [posts, setPosts] = useState<Post[]>([]);
-  const [loading, setLoading] = useState<boolean>(false);\n  const [displayName, setDisplayName] = useState<string | undefined>(undefined);
+  const [loading, setLoading] = useState<boolean>(false);
+  const [displayName, setDisplayName] = useState<string | undefined>(undefined);
   const { toast, showToast } = useToast();
   useEffect(()=>{ const onHash=()=>setRoute(parseHash()); window.addEventListener('hashchange', onHash); return ()=>window.removeEventListener('hashchange', onHash); },[]);
   useEffect(()=>{ if(!data) return; if (data.mode==='local') data.seed?.(); refresh(); const unsub = data.subscribe? data.subscribe(()=>refresh()): undefined; return ()=>{ unsub && unsub(); }; },[data]);
@@ -231,16 +232,50 @@ function createLocalLayer(): DataLayer{
 
   async function refresh(){ if(!data) return; try { setLoading(true); const list = await data.listPosts(); setPosts(list); } catch(e:any){ showToast('Failed to load posts'); } finally { setLoading(false);} }
 
-  const niceAuthError = (e:any) => { const m = String(e?.message || e || '').toLowerCase(); if (m.includes('invalid login') || m.includes('invalid email') || m.includes('invalid credentials')) return 'Invalid email/username or password.'; if (m.includes('registered') || m.includes('already exists')) return 'Email already in use. Please sign in.'; if (m.includes('confirm')) return 'Check your email to confirm your account, then sign in.'; return e?.message || 'Authentication failed.'; };\n  const doSignIn = async ({ identifier, password }:{ identifier:string, password:string })=>{ try { await data?.signIn({ identifier, password }); window.location.hash = '#/profile'; refresh(); } catch(e:any){ showToast(niceAuthError(e)); } };
+  const niceAuthError = (e:any) => { const m = String(e?.message || e || '').toLowerCase(); if (m.includes('invalid login') || m.includes('invalid email') || m.includes('invalid credentials')) return 'Invalid email/username or password.'; if (m.includes('registered') || m.includes('already exists')) return 'Email already in use. Please sign in.'; if (m.includes('confirm')) return 'Check your email to confirm your account, then sign in.'; return e?.message || 'Authentication failed.'; };
+  const doSignIn = async ({ identifier, password }:{ identifier:string, password:string })=>{ try { await data?.signIn({ identifier, password }); window.location.hash = '#/profile'; refresh(); } catch(e:any){ showToast(niceAuthError(e)); } };
   const doSignUp = async ({ email, password, username, bio }:{ email:string, password:string, username?:string, bio?:string })=>{ try { await data?.signUp({ email, password, username, bio }); window.location.hash = '#/profile'; refresh(); } catch(e:any){ showToast(niceAuthError(e)); } };
-  const doSignOut = async ()=>{\n    try {\n      await data?.signOut();\n    } catch {}\n    try {\n      for (const k in localStorage) {\n        if (typeof k === 'string' && k.startsWith('sb-') && k.endsWith('-auth-token')) {\n          try { localStorage.removeItem(k as any); } catch {}\n        }\n      }\n      sessionStorage.removeItem('instafacts_cache');\n    } catch {}\n    window.location.hash = '#/login';\n    window.location.reload();\n  };
+  const doSignOut = async ()=>{
+    try {
+      await data?.signOut();
+    } catch {}
+    try {
+      for (const k in localStorage) {
+        if (typeof k === 'string' && k.startsWith('sb-') && k.endsWith('-auth-token')) {
+          try { localStorage.removeItem(k as any); } catch {}
+        }
+      }
+      sessionStorage.removeItem('instafacts_cache');
+    } catch {}
+    window.location.hash = '#/login';
+    window.location.reload();
+  };
 
   const onAddComment = async (postId:string, content:string)=>{ try { await data?.addComment({ postId, content }); refresh(); } catch(e:any){ showToast('Failed to add comment'); } };
   const onEditPost   = async (postId:string, caption:string)=>{ try { await data?.updatePost({ postId, caption }); refresh(); } catch(e:any){ showToast('Failed to update'); } };
   const onDeletePost = async (postId:string)=>{ try { await data?.deletePost({ postId }); refresh(); } catch(e:any){ showToast('Failed to delete'); } };
   const onReactPost  = async (postId:string, type:'up'|'down')=>{ try { await data?.toggleReactPost({ postId, type }); refresh(); } catch(e:any){ showToast('Failed to react'); } };
   const deleteAllByUser = async (userId:string)=>{ try { await data?.deleteAllPostsByUser?.(userId); refresh(); } catch(e:any){ showToast('Admin policy not configured'); } };
-  \n\n  // Derive display name (prefer username)\n  useEffect(()=>{ let cancelled=false; (async()=>{\n    const id = data?.currentUser?.id;\n    if (id && data?.getProfile){\n      try { const p = await data.getProfile(id); if(!cancelled) setDisplayName(p?.username || data.currentUser?.email || undefined); } catch { setDisplayName(data?.currentUser?.email); }\n    } else { setDisplayName(undefined); }\n  })(); return ()=>{ cancelled=true; }; }, [data?.currentUser?.id]); window.location.hash = '#/home'; refresh(); showToast('Posted'); } catch(e:any){ showToast(e.message||'Failed to post'); } };
+
+// Create post helper
+const onCreatePost = async (files: File[], caption: string) => {
+  try {
+    await data?.createPost({ files, caption });
+    window.location.hash = '#/home';
+    refresh();
+    showToast('Posted');
+  } catch (e:any) {
+    showToast(e.message || 'Failed to post');
+  }
+};
+
+// Derive display name (prefer username)
+  useEffect(()=>{ let cancelled=false; (async()=>{
+    const id = data?.currentUser?.id;
+    if (id && data?.getProfile){
+      try { const p = await data.getProfile(id); if(!cancelled) setDisplayName(p?.username || data.currentUser?.email || undefined); } catch { setDisplayName(data?.currentUser?.email); }
+    } else { setDisplayName(undefined); }
+  })(); return ()=>{ cancelled=true; }; }, [data?.currentUser?.id]);
 
   return (
     <div className="min-h-screen bg-neutral-50 text-neutral-900">
@@ -724,6 +759,11 @@ function ProfileEditor({ loadProfile, onSave }:{ loadProfile: ()=>Promise<Profil
 function Footer() { return <footer className="text-center text-xs text-neutral-400 py-6">InstaFacts</footer>; }
 
 export default App;
+
+
+
+
+
 
 
 
