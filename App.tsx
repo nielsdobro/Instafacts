@@ -11,6 +11,9 @@ const timeAgo = (ts:number) => { const s=Math.floor((Date.now()-ts)/1000); if(s<
 function useToast(){ const [toast, setToast] = useState<string|null>(null); const t = useRef<number|undefined>(undefined); const showToast=(msg:string,ms=2000)=>{ setToast(msg); if(t.current) window.clearTimeout(t.current); t.current=window.setTimeout(()=>setToast(null),ms); }; useEffect(()=>()=>{ if(t.current) window.clearTimeout(t.current); },[]); return { toast, showToast }; }
 function Toast({ msg }:{ msg:string }){ return <div className="fixed top-3 left-1/2 -translate-x-1/2 bg-neutral-900 text-white px-4 py-2 rounded-xl shadow z-50">{msg}</div>; }
 
+// Bump this each time App.tsx changes (for cache-busting on Vercel)
+const APP_VERSION = 'v0.5';
+
 type Profile = { id: string; username: string; bio?: string; email?: string };
 
 type DataLayer = {
@@ -22,6 +25,7 @@ type DataLayer = {
   signOut(): Promise<void>;
   listPosts(): Promise<Post[]>;
   getProfile(id:string): Promise<Profile | null>;
+  updateProfile(p:{ username: string; bio?: string }): Promise<void>;
   addComment(p:{ postId:string, content:string }): Promise<void>;
   updatePost(p:{ postId:string, caption:string }): Promise<void>;
   deletePost(p:{ postId:string }): Promise<void>;
@@ -109,6 +113,15 @@ async function createSupabaseLayer(supabase:any, adminEmail?:string): Promise<Da
       return posts.map((p:any)=>({ id:p.id, userId:p.user_id, caption:p.caption, createdAt:new Date(p.created_at).getTime(), media_urls:p.media_urls||[], mediaTypes:p.media_types||[], comments: byPost.get(p.id)||[], likesUp:p.likes_up||[], likesDown:p.likes_down||[], edited: !!p.edited }));
     },
     async getProfile(id:string){ return await _getProfile(id); },
+    async updateProfile({ username, bio }){
+      const u = await getUser();
+      if (!u) throw new Error('Login required');
+      const { error } = await supabase.from('profiles')
+        .update({ username, bio })
+        .eq('id', u.id);
+      if (error) throw error;
+      cache.delete(u.id);
+    },
     async createPost({ files, caption }){
       const u = await getUser();
       if (!u) throw new Error('Login required');
@@ -189,6 +202,7 @@ function createLocalLayer(): DataLayer{
     async signOut(){ state.currentUser = null; },
     async listPosts(){ return state.posts; },
     async getProfile(id:string){ return state.profiles.get(id) || { id, username:id, bio:'' }; },
+    async updateProfile({ username, bio }){ if(!state.currentUser) return; const id = state.currentUser.id; state.profiles.set(id, { id, username, bio: bio||'', email: state.currentUser.email }); },
     async createPost({ files, caption }){ const urls: string[] = []; const types: ("image"|"video")[] = []; for (const f of files){ if (!f) continue; const isVideo = f.type.startsWith('video'); urls.push(URL.createObjectURL(f)); types.push(isVideo? 'video':'image'); } state.posts = [{ id:uid('p'), userId: state.currentUser?.id||'user_local', caption, createdAt: Date.now(), media_urls: urls, mediaTypes: types, comments:[], likesUp:[], likesDown:[], edited:false }, ...state.posts ]; },
     async addComment({ postId, content }){ state.posts = state.posts.map(p=> p.id===postId? { ...p, comments:[...p.comments, { id:uid('c'), userId: state.currentUser?.id||'user_local', content, createdAt:Date.now(), replies:[], likesUp:[], likesDown:[] } ] } : p ); },
     async updatePost({ postId, caption }){ state.posts = state.posts.map(p=> p.id===postId? { ...p, caption, edited:true } : p ); },
@@ -217,8 +231,8 @@ function createLocalLayer(): DataLayer{
 
   async function refresh(){ if(!data) return; try { setLoading(true); const list = await data.listPosts(); setPosts(list); } catch(e:any){ showToast('Failed to load posts'); } finally { setLoading(false);} }
 
-  const doSignIn = async ({ identifier, password }:{ identifier:string, password:string })=>{ try { await data?.signIn({ identifier, password }); window.location.hash = '#/home'; refresh(); } catch(e:any){ showToast(e.message||'Sign in failed'); } };
-  const doSignUp = async ({ email, password, username, bio }:{ email:string, password:string, username?:string, bio?:string })=>{ try { await data?.signUp({ email, password, username, bio }); window.location.hash = '#/home'; refresh(); } catch(e:any){ showToast(e.message||'Sign up failed'); } };
+  const doSignIn = async ({ identifier, password }:{ identifier:string, password:string })=>{ try { await data?.signIn({ identifier, password }); window.location.hash = '#/profile'; refresh(); } catch(e:any){ showToast(e.message||'Sign in failed'); } };
+  const doSignUp = async ({ email, password, username, bio }:{ email:string, password:string, username?:string, bio?:string })=>{ try { await data?.signUp({ email, password, username, bio }); window.location.hash = '#/profile'; refresh(); } catch(e:any){ showToast(e.message||'Sign up failed'); } };
   const doSignOut = async ()=>{ try { await data?.signOut(); window.location.hash = '#/home'; refresh(); } catch(e:any){ showToast('Sign out failed'); } };
 
   const onAddComment = async (postId:string, content:string)=>{ try { await data?.addComment({ postId, content }); refresh(); } catch(e:any){ showToast('Failed to add comment'); } };
@@ -235,6 +249,14 @@ function createLocalLayer(): DataLayer{
         {toast && <Toast msg={toast} />}
         {route==='login' && !isAuthed && <div className="max-w-md mx-auto"><LoginCard onSignIn={doSignIn} onSignUp={doSignUp} /></div>}
         {route==='new' && isAuthed && <div className="max-w-md mx-auto"><NewPost onCreate={onCreatePost} /></div>}
+        {route==='profile' && isAuthed && (
+          <div className="max-w-md mx-auto mt-4">
+            <ProfileEditor
+              loadProfile={async()=> (data ? await data.getProfile(data.currentUser!.id) : null)}
+              onSave={async (p)=>{ try { await data?.updateProfile(p); showToast('Profile saved'); window.location.hash = '#/home'; refresh(); } catch(e:any){ showToast(e.message||'Save failed'); } }}
+            />
+          </div>
+        )}
         {route==='home' && (
           <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,680px)_320px] gap-8 mt-4">
             <div>
@@ -261,17 +283,20 @@ function createLocalLayer(): DataLayer{
   );
 }
 
-function parseHash(){ const raw=window.location.hash.replace(/^#\/?/,''); if(!raw) return 'home'; if(['home','login','new'].includes(raw)) return raw; return 'home'; }
+function parseHash(){ const raw=window.location.hash.replace(/^#\/?/,''); if(!raw) return 'home'; if(['home','login','new','profile'].includes(raw)) return raw; return 'home'; }
 
 function TopBar({ currentUserEmail, onSignOut }:{ currentUserEmail?: string, onSignOut: ()=>void }){
   return (
     <header className="sticky top-0 z-30 bg-white/80 backdrop-blur border-b border-neutral-200">
-      <div className="max-w-xl md:max-w-2xl mx-auto px-4 py-2.5 flex items-center justify-between">
+      <div className="max-w-5xl mx-auto px-4 py-2.5 flex items-center justify-between">
         <a href="#/home" className="flex items-center gap-2 hover:opacity-90">
           <Logo size={26} />
           <span className="hidden sm:block font-semibold tracking-tight">InstaFacts</span>
         </a>
-        <div className="flex items-center gap-2 text-sm">
+        <div className="flex items-center gap-3 text-sm">
+          <a href="#/home" aria-label="Home" className="p-1.5 rounded-xl hover:bg-neutral-100"><HomeIcon/></a>
+          <a href="#/new" aria-label="New" className="p-1.5 rounded-xl hover:bg-neutral-100"><AddIcon/></a>
+          <a href="#/profile" aria-label="Profile" className="p-1.5 rounded-xl hover:bg-neutral-100"><UserIcon/></a>
           {currentUserEmail ? (
             <>
               <span className="px-2 text-neutral-600 hidden sm:block">{currentUserEmail}</span>
@@ -280,6 +305,7 @@ function TopBar({ currentUserEmail, onSignOut }:{ currentUserEmail?: string, onS
           ) : (
             <a href="#/login" className="px-3 py-1.5 rounded-xl bg-neutral-900 text-white">Log in</a>
           )}
+          <span className="ml-2 text-xs text-neutral-500">{APP_VERSION}</span>
         </div>
       </div>
     </header>
@@ -656,7 +682,7 @@ function MobileTabbar({ isAuthed }:{ isAuthed:boolean }){
         <a href="#/home" aria-label="Home" className="p-2"><HomeIcon/></a>
         <a href="#/new" aria-label="New" className={classNames('p-2 rounded-full', isAuthed? '':'opacity-50 pointer-events-none')}><AddIcon/></a>
         <button aria-label="Activity" className="p-2 opacity-60"><HeartIcon/></button>
-        <button aria-label="Profile" className="p-2 opacity-60"><UserIcon/></button>
+        <a href="#/profile" aria-label="Profile" className="p-2 opacity-60"><UserIcon/></a>
       </div>
     </nav>
   );
@@ -666,6 +692,34 @@ function HomeIcon(){return (<svg width="22" height="22" viewBox="0 0 24 24" fill
 function AddIcon(){return (<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>);} 
 function HeartIcon(){return (<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.6l-1-1a5.5 5.5 0 0 0-7.8 7.8l1 1L12 21l7.8-7.6 1-1a5.5 5.5 0 0 0 0-7.8z"/></svg>);} 
 function UserIcon(){return (<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21a8 8 0 0 0-16 0"/><circle cx="12" cy="7" r="4"/></svg>);} 
+
+function ProfileEditor({ loadProfile, onSave }:{ loadProfile: ()=>Promise<Profile|null>, onSave:(p:{username:string,bio?:string})=>void }){
+  const [username, setUsername] = useState('');
+  const [bio, setBio] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState('');
+  useEffect(()=>{ (async()=>{ try { const p = await loadProfile(); if(p){ setUsername(p.username||''); setBio(p.bio||''); } } finally { setLoading(false);} })(); },[loadProfile]);
+  if (loading) return <div className="bg-white border border-neutral-200 rounded-3xl p-4 shadow">Loading profile…</div>;
+  const submit = ()=>{ setErr(''); if(!username.trim()) { setErr('Username is required'); return; } onSave({ username: username.trim(), bio: bio||'' }); };
+  return (
+    <div className="bg-white border border-neutral-200 rounded-3xl p-4 shadow">
+      <h2 className="font-semibold mb-3">Edit profile</h2>
+      <div className="grid gap-3">
+        <label className="text-sm">Username
+          <input className="mt-1 w-full border border-neutral-300 rounded-xl px-3 py-2" value={username} onChange={e=>setUsername(e.target.value)} placeholder="yourname" />
+        </label>
+        <label className="text-sm">Bio
+          <textarea className="mt-1 w-full border border-neutral-300 rounded-xl px-3 py-2" rows={3} value={bio} onChange={e=>setBio(e.target.value)} placeholder="Tell something about yourself" />
+        </label>
+        {err && <div className="text-xs text-red-600">{err}</div>}
+        <div className="flex items-center gap-2 mt-1">
+          <button onClick={submit} className="px-4 py-2 rounded-xl bg-neutral-900 text-white">Save</button>
+          <a href="#/home" className="text-sm text-neutral-600 hover:underline">Cancel</a>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function Footer() { return <footer className="text-center text-xs text-neutral-400 py-6">InstaFacts</footer>; }
 
