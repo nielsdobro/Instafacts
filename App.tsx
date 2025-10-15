@@ -87,16 +87,7 @@ async function createSupabaseLayer(supabase:any, adminEmail?:string): Promise<Da
       const { error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) throw error;
     },
-    async signUp({ email, password, username, bio }){
-      const { data, error } = await supabase.auth.signUp({ email, password });
-      if (error) throw error;
-      const u = data.user || (await getUser());
-      if (!u) return;
-      if (username){
-        const { error: e2 } = await supabase.from('profiles').insert({ id: u.id, username, bio: bio||'', email });
-        if (e2) throw e2;
-      }
-    },
+    async signUp({ email, password, username, bio }){ const { data, error } = await supabase.auth.signUp({ email, password }); if (error) throw error; const u = data.user || (await getUser()); if (!u) return; if (username){ const { error: e2 } = await supabase.from('profiles').upsert({ id: u.id, username, bio: bio||'', email }, { onConflict: 'id' }); if (e2) throw e2; } },
     async signOut(){ await supabase.auth.signOut(); },async listPosts(){
       const { data: posts, error: e1 } = await supabase.from('posts').select('*').order('created_at',{ascending:false}).limit(50);
       if (e1) throw e1;
@@ -113,15 +104,7 @@ async function createSupabaseLayer(supabase:any, adminEmail?:string): Promise<Da
       return posts.map((p:any)=>({ id:p.id, userId:p.user_id, caption:p.caption, createdAt:new Date(p.created_at).getTime(), media_urls:p.media_urls||[], mediaTypes:p.media_types||[], comments: byPost.get(p.id)||[], likesUp:p.likes_up||[], likesDown:p.likes_down||[], edited: !!p.edited }));
     },
     async getProfile(id:string){ return await _getProfile(id); },
-    async updateProfile({ username, bio }){
-      const u = await getUser();
-      if (!u) throw new Error('Login required');
-      const { error } = await supabase.from('profiles')
-        .update({ username, bio })
-        .eq('id', u.id);
-      if (error) throw error;
-      cache.delete(u.id);
-    },
+    async updateProfile({ username, bio }){\n      const u = await getUser();\n      if (!u) throw new Error('Login required');\n      const { error } = await supabase.from('profiles')\n        .upsert({ id: u.id, username, bio: bio||'', email: u.email }, { onConflict: 'id' });\n      if (error) throw error;\n      cache.delete(u.id);\n    },
     async createPost({ files, caption }){
       const u = await getUser();
       if (!u) throw new Error('Login required');
@@ -202,7 +185,7 @@ function createLocalLayer(): DataLayer{
     async signOut(){ state.currentUser = null; },
     async listPosts(){ return state.posts; },
     async getProfile(id:string){ return state.profiles.get(id) || { id, username:id, bio:'' }; },
-    async updateProfile({ username, bio }){ if(!state.currentUser) return; const id = state.currentUser.id; state.profiles.set(id, { id, username, bio: bio||'', email: state.currentUser.email }); },
+    async updateProfile({ username, bio }){\n      const u = await getUser();\n      if (!u) throw new Error('Login required');\n      const { error } = await supabase.from('profiles')\n        .upsert({ id: u.id, username, bio: bio||'', email: u.email }, { onConflict: 'id' });\n      if (error) throw error;\n      cache.delete(u.id);\n    },
     async createPost({ files, caption }){ const urls: string[] = []; const types: ("image"|"video")[] = []; for (const f of files){ if (!f) continue; const isVideo = f.type.startsWith('video'); urls.push(URL.createObjectURL(f)); types.push(isVideo? 'video':'image'); } state.posts = [{ id:uid('p'), userId: state.currentUser?.id||'user_local', caption, createdAt: Date.now(), media_urls: urls, mediaTypes: types, comments:[], likesUp:[], likesDown:[], edited:false }, ...state.posts ]; },
     async addComment({ postId, content }){ state.posts = state.posts.map(p=> p.id===postId? { ...p, comments:[...p.comments, { id:uid('c'), userId: state.currentUser?.id||'user_local', content, createdAt:Date.now(), replies:[], likesUp:[], likesDown:[] } ] } : p ); },
     async updatePost({ postId, caption }){ state.posts = state.posts.map(p=> p.id===postId? { ...p, caption, edited:true } : p ); },
@@ -759,6 +742,8 @@ function ProfileEditor({ loadProfile, onSave }:{ loadProfile: ()=>Promise<Profil
 function Footer() { return <footer className="text-center text-xs text-neutral-400 py-6">InstaFacts</footer>; }
 
 export default App;
+
+
 
 
 
