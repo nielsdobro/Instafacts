@@ -32,6 +32,7 @@ type DataLayer = {
 function useDataLayer(){
   const [layer,setLayer] = useState<DataLayer|null>(null);
   useEffect(()=>{
+    let unsub: undefined | (()=>void);
     (async()=>{
       const url = import.meta.env.VITE_SUPABASE_URL as string|undefined;
       const anon = import.meta.env.VITE_SUPABASE_ANON_KEY as string|undefined;
@@ -39,10 +40,15 @@ function useDataLayer(){
       if(url && anon){
         const sb = createClient(url, anon);
         setLayer(await createSupabaseLayer(sb, adminEmail));
+        const { data } = sb.auth.onAuthStateChange(async ()=>{
+          setLayer(await createSupabaseLayer(sb, adminEmail));
+        });
+        unsub = () => data.subscription.unsubscribe();
       } else {
         setLayer(createLocalLayer());
       }
     })();
+    return () => { if (unsub) unsub(); };
   },[]);
   return layer;
 }
@@ -572,3 +578,4 @@ function UserIcon(){return (<svg width="22" height="22" viewBox="0 0 24 24" fill
 function Footer() { return <footer className="text-center text-xs text-neutral-400 py-6">InstaFacts</footer>; }
 
 export default App;
+
