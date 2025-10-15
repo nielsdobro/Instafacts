@@ -57,7 +57,8 @@ function demoSVG(text){return "data:image/svg+xml;utf8,"+encodeURIComponent(`<sv
 function demoSquare(){return "data:image/svg+xml;utf8,"+encodeURIComponent(`<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 600 600'><rect width='600' height='600' fill='#222'/><circle cx='300' cy='300' r='200' fill='#999'/><text x='50%' y='50%' text-anchor='middle' fill='white' font-size='42' font-family='Arial' dy='.3em'>Square Media</text></svg>`);} 
 
 function useDataLayer() {
-  const [layer, setLayer] = useState(null);
+  const [layer, setLayer] = useState<any>(null);
+  const [initError, setInitError] = useState<string | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -66,29 +67,51 @@ function useDataLayer() {
         const key = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
         if (!url || !key) throw new Error("Missing Supabase env vars");
         const sb = createClient(url, key);
-        const supa = createSupabaseDataLayer(sb);
+        const supa = await createSupabaseDataLayer(sb);
         setLayer(supa);
-      } catch (e) {
+      } catch (e: any) {
         console.error("[InstaFacts] Supabase init failed:", e);
         setInitError("Supabase configuration error. Please set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.");
       }
-    })();}, []);
+    })();
+  }, []);
 
+  if (initError) {
+    return null;
+  }
   return layer;
 }
 
+async function createSupabaseDataLayer(supabase: any) {
+  const [currentUser, setCurrentUser] = (() => {
+    let user: any = null;
+    let setUser: (u: any) => void = () => {};
+    const listeners: ((u: any) => void)[] = [];
+    setUser = (u) => {
+      user = u;
+      listeners.forEach((cb) => cb(u));
+    };
+    return [user, setUser];
+  })();
 
-function createSupabaseDataLayer(supabase){
-  let currentUser = null;
-  // Keep session
-  supabase.auth.getUser().then(({ data }) => { currentUser = data?.user || null; });
-  supabase.auth.onAuthStateChange((_event, session) => { currentUser = session?.user || null; });
+  // Use React state for currentUser
+  let userState: any = null;
+  const getUser = async () => {
+    const { data } = await supabase.auth.getUser();
+    userState = data?.user || null;
+    setCurrentUser(userState);
+  };
+  await getUser();
+  supabase.auth.onAuthStateChange((_event: any, session: any) => {
+    userState = session?.user || null;
+    setCurrentUser(userState);
+  });
 
   const mediaBucket = "media";
 
   return {
     mode: "supabase",
-    get currentUser(){ return currentUser; },
+    get currentUser() { return userState; },
     async signUp({ username, password, bio }){
       const email = `${username.trim()}+instafacts@example.com`; // demo email format (no deliverability required)
       const { data, error } = await supabase.auth.signUp({ email, password });
@@ -189,23 +212,33 @@ async listPosts(){
     edited: !!row.edited,
   }));
 },
-    async createPost({ file, caption, croppedDataURL }){
+    async createPost({ files, caption, croppedDataURLs }){
       if (!currentUser) throw new Error("Login required");
-      let media_url=""; let media_type="image";
-      if (file.type.startsWith("video")) media_type="video";
-      if (file) {
-        // upload to storage
-        const ext = file.name.split('.').pop() || (media_type==='video'? 'mp4':'jpg');
-        const path = `${currentUser.id}/${Date.now()}.${ext}`;
-        const { error: upErr } = await supabase.storage.from(mediaBucket).upload(path, file, { upsert:false });
-        if (upErr) throw upErr;
-        const { data: pub } = supabase.storage.from(mediaBucket).getPublicUrl(path);
-        media_url = pub.publicUrl;
-      } else if (croppedDataURL) {
-        // data URL fallback (not typical for Supabase)
-        media_url = croppedDataURL;
+      let media_urls = [];
+      let media_types = [];
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        let media_url = "";
+        let media_type = file.type.startsWith("video") ? "video" : "image";
+        if (file) {
+          const ext = file.name.split('.').pop() || (media_type==='video'? 'mp4':'jpg');
+          const path = `${currentUser.id}/${Date.now()}_${i}.${ext}`;
+          const { error: upErr } = await supabase.storage.from(mediaBucket).upload(path, file, { upsert:false });
+          if (upErr) throw upErr;
+          const { data: pub } = supabase.storage.from(mediaBucket).getPublicUrl(path);
+          media_url = pub.publicUrl;
+        } else if (croppedDataURLs && croppedDataURLs[i]) {
+          media_url = croppedDataURLs[i];
+        }
+        media_urls.push(media_url);
+        media_types.push(media_type);
       }
-      const { error } = await supabase.from('posts').insert({ user_id: currentUser.id, media_type, media_url, caption: caption.trim() });
+      const { error } = await supabase.from('posts').insert({
+        user_id: currentUser.id,
+        media_types,
+        media_urls,
+        caption: caption.trim()
+      });
       if (error) throw error;
     },
     async updatePost({ postId, caption }){
@@ -295,44 +328,93 @@ async listPosts(){
 }
 
 // ===== App =====
-export default function App(){
+function App(){
   const data = useDataLayer();
   const [routeState, setRoute] = useState(()=>parseHash());
-  useEffect(()=>{ const onHash=()=>setRoute(parseHash()); window.addEventListener('hashchange',onHash); if(!window.location.hash) window.location.hash = '#/home'; return ()=>window.removeEventListener('hashchange',onHash); },[]);
-
-  // feed state (works both modes)
   const [posts, setPosts] = useState([]);
-  const refresh = async ()=>{ if (!data) return; const list = await data.listPosts(); setPosts(list); };
-  useEffect(()=>{ if (!data) return; if (data.mode==='local') data.seed(); refresh(); const unsub = data.subscribe? data.subscribe(()=>refresh()) : ()=>{}; return unsub; },[data]);
+  const [loadingPosts, setLoadingPosts] = useState(false);
+  const { toast, showToast } = useToast();
 
+  const refresh = async () => {
+    if (!data) return;
+    setLoadingPosts(true);
+    try {
+      const list = await data.listPosts();
+      setPosts(list);
+    } catch (e) {
+      showToast("Failed to load posts.");
+    }
+    setLoadingPosts(false);
+  };
+
+  useEffect(()=>{ if (!data) return; if (data.mode==='local') data.seed(); refresh(); const unsub = data.subscribe? data.subscribe(()=>refresh()) : ()=>{}; return unsub; },[data]);
   const currentUser = data?.currentUser || null; const isAuthed = !!currentUser;
 
   // Top-level actions wire to data layer
-  const doSignIn = async (p)=>{ await data.signIn(p); location.hash = '#/home'; setTimeout(refresh,10); };
-  const doSignUp = async (p)=>{ await data.signUp(p); location.hash = '#/home'; setTimeout(refresh,10); };
+  const doSignIn = async (p)=>{ try { await data.signIn(p); location.hash = '#/home'; setTimeout(refresh,10); } catch(e) { showToast(e.message || "Sign in failed."); } };
+  const doSignUp = async (p)=>{ try { await data.signUp(p); location.hash = '#/home'; setTimeout(refresh,10); } catch(e) { showToast(e.message || "Sign up failed."); } };
   const doSignOut = async ()=>{
-    await data.signOut();
-    // Force a UI update even if the hash is already on /home
-    if (window.location.hash !== '#/home') {
-      window.location.hash = '#/home';
-    } else {
-      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    try {
+      await data.signOut();
+      if (window.location.hash !== '#/home') {
+        window.location.hash = '#/home';
+      } else {
+        window.dispatchEvent(new HashChangeEvent('hashchange'));
+      }
+      setTimeout(refresh, 0);
+    } catch(e) {
+      showToast("Sign out failed.");
     }
-    // Also refresh posts to trigger a render from state
-    setTimeout(refresh, 0);
   };
   const doUpdateAccount = async (p)=>{ await data.updateAccount(p); };
-  \1await data.createPost(p);
-    window.location.hash = '#/home';
-    await refresh();\3
+  const doCreate = async (p) => {
+    try {
+      await data.createPost(p);
+      window.location.hash = '#/home';
+      await refresh();
+    } catch(e) {
+      showToast("Failed to create post.");
+    }
+  };
   const doUpdatePost = async (id, caption)=>{ await data.updatePost({ postId:id, caption }); await refresh(); };
-  const doDeletePost = async (id)=>{ await data.deletePost({ postId:id }); await refresh(); };
-  const doAddComment = async (postId, content)=>{ await data.addComment({ postId, content }); await refresh(); };
-  const doAddReply = async (postId, commentId, content)=>{ await data.addReply({ postId, commentId, content }); await refresh(); };
-  const doEditComment = async (postId, commentId, replyId, content)=>{ await data.editComment({ postId, commentId, replyId, content }); await refresh(); };
-  const doDeleteComment = async (postId, commentId, replyId)=>{ await data.deleteComment({ postId, commentId, replyId }); await refresh(); };
-  const doReactPost = async (postId, type)=>{ await data.toggleReactPost({ postId, type }); await refresh(); };
-  const doReactComment = async (postId, commentId, replyId, type)=>{ await data.toggleReactComment({ postId, commentId, replyId, type }); await refresh(); };
+  const doDeletePost = async (id)=>{ try { await data.deletePost({ postId:id }); await refresh(); } catch(e) { showToast("Failed to delete post."); } };
+  const doAddComment = async (postId, content) => {
+    if (!data || !currentUser) return;
+    setPosts(posts =>
+      posts.map(post =>
+        post.id === postId
+          ? {
+              ...post,
+              comments: [
+                ...post.comments,
+                {
+                  id: uid("c"),
+                  userId: currentUser.id,
+                  content,
+                  createdAt: Date.now(),
+                  replies: [],
+                  likesUp: [],
+                  likesDown: [],
+                  edited: false,
+                  optimistic: true,
+                },
+              ],
+            }
+            : post
+      )
+    );
+    try {
+      await data.addComment({ postId, content });
+      await refresh();
+    } catch (e) {
+      showToast("Failed to add comment.");
+    }
+  };
+  const doAddReply = async (postId, commentId, content)=>{ try { await data.addReply({ postId, commentId, content }); await refresh(); } catch(e) { showToast("Failed to add reply."); } };
+  const doEditComment = async (postId, commentId, replyId, content)=>{ try { await data.editComment({ postId, commentId, replyId, content }); await refresh(); } catch(e) { showToast("Failed to edit comment."); } };
+  const doDeleteComment = async (postId, commentId, replyId)=>{ try { await data.deleteComment({ postId, commentId, replyId }); await refresh(); } catch(e) { showToast("Failed to delete comment."); } };
+  const doReactPost = async (postId, type)=>{ try { await data.toggleReactPost({ postId, type }); await refresh(); } catch(e) { showToast("Failed to react to post."); } };
+  const doReactComment = async (postId, commentId, replyId, type)=>{ try { await data.toggleReactComment({ postId, commentId, replyId, type }); await refresh(); } catch(e) { showToast("Failed to react to comment."); } };
 
   const { route, params } = routeState;
   useEffect(()=>{ const gated=["new","profile","settings"]; const raw=window.location.hash.replace(/^#\/?/,""); if (!isAuthed && gated.includes(raw)) window.location.hash = "#/login"; },[isAuthed,route]);
@@ -341,7 +423,9 @@ export default function App(){
     <div className="min-h-screen bg-neutral-50 text-neutral-900">
       <TopBar currentUser={currentUser} onSignOut={doSignOut} />
       <div className="max-w-2xl mx-auto px-4 pb-24">
+        {toast && <Toast msg={toast} />}
         {!data && <p className="mt-8 text-center text-neutral-500">Loading…</p>}
+        {loadingPosts && <div className="mt-8 text-center"><Spinner /></div>}
         {data && route==='login' && !isAuthed && <LoginCard onSignIn={doSignIn} onSignUp={doSignUp} onSeed={()=>{ if(data.mode==='local') data.seed(); refresh(); }} />}
         {data && route==='home' && (
           <HomeFeed posts={posts}
@@ -389,11 +473,11 @@ function mapPostFromDB(row){
   return {
     id: row.id,
     userId: row.user_id,
-    mediaType: row.media_type,
-    media_url: row.media_url,
+    mediaTypes: row.media_types || [row.media_type],
+    media_urls: row.media_urls || [row.media_url],
     caption: row.caption,
     createdAt: new Date(row.created_at).getTime(),
-    comments: [], // fetched via realtime/joins if you extend
+    comments: [],
     likesUp: row.likes_up || [],
     likesDown: row.likes_down || [],
     edited: !!row.edited,
@@ -540,8 +624,12 @@ function InlineReactions({ upActive, downActive, upCount, downCount, onUp, onDow
 function ThumbUpIcon(){return (<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 9V5a3 3 0 0 0-3-3l-3 8v10h9a3 3 0 0 0 3-3v-4a3 3 0 0 0-3-3h-3z"/></svg>);} 
 function ThumbDownIcon(){return (<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10 15v4a3 3 0 0 0 3 3l3-8V4H7a3 3 0 0 0-3 3v4a3 3 0 0 0 3 3h3z"/></svg>);} 
 
-function PostCard({ post, author, getUser, onAddComment, onAddReply, onReactPost, onReactComment, isAuthed, currentUserId, onEditPost, onDeletePost, onEditComment, onDeleteComment }){
-  const [comment,setComment]=useState(''); const [expanded,setExpanded]=useState(false); const [editing,setEditing]=useState(false); const [captionDraft,setCaptionDraft]=useState(post.caption);
+function PostCard({ post, author, getUser, ...props }){
+  const [slide, setSlide] = useState(0);
+  const mediaCount = post.media_urls?.length || 1;
+  const mediaTypes = post.mediaTypes || ["image"];
+  const media_urls = post.media_urls || [post.media_url];
+
   const comments = Array.isArray(post.comments)? post.comments: []; // In Supabase mode, comments are shown when added via realtime if you extend joins.
   const shown = expanded? comments : comments.slice(-2); const hidden=Math.max(0, comments.length - shown.length); const isOwner = currentUserId===post.userId;
   const submitComment=()=>{ if(!isAuthed) return; if(comment.trim()) { onAddComment(post.id, comment); setComment(''); } };
@@ -567,18 +655,54 @@ function PostCard({ post, author, getUser, onAddComment, onAddReply, onReactPost
 
       <div className="relative w-full" style={{ paddingTop:'100%' }}>
         <div className="absolute inset-0 bg-black">
-          {post.mediaType==='video'? (
-            <video src={post.media_url} className="w-full h-full object-cover" controls playsInline />
+          {mediaTypes[slide]==='video' ? (
+            <video src={media_urls[slide]} className="w-full h-full object-cover" controls playsInline />
           ) : (
-            <img src={post.media_url} alt="Post media" className="w-full h-full object-cover" />
+            <img src={media_urls[slide]} alt="Post media" className="w-full h-full object-cover" />
+          )}
+          {mediaCount > 1 && (
+            <div className="absolute top-2 left-1/2 -translate-x-1/2 flex gap-2 z-10">
+              {media_urls.map((_, idx) => (
+                <button
+                  key={idx}
+                  onClick={() => setSlide(idx)}
+                  className={classNames(
+                    "w-2 h-2 rounded-full",
+                    slide === idx ? "bg-neutral-900" : "bg-neutral-300"
+                  )}
+                  aria-label={`Go to slide ${idx + 1}`}
+                  tabIndex={0}
+                />
+              ))}
+            </div>
+          )}
+          {mediaCount > 1 && (
+            <>
+              <button
+                onClick={() => setSlide((slide - 1 + mediaCount) % mediaCount)}
+                className="absolute left-2 top-1/2 -translate-y-1/2 bg-white/70 rounded-full p-1"
+                aria-label="Previous slide"
+                tabIndex={0}
+              >
+                ‹
+              </button>
+              <button
+                onClick={() => setSlide((slide + 1) % mediaCount)}
+                className="absolute right-2 top-1/2 -translate-y-1/2 bg-white/70 rounded-full p-1"
+                aria-label="Next slide"
+                tabIndex={0}
+              >
+                ›
+              </button>
+            </>
           )}
         </div>
         <PostReactionsOverlay
-          upActive={!!currentUserId && (post.likesUp||[]).includes(currentUserId)}
-          downActive={!!currentUserId && (post.likesDown||[]).includes(currentUserId)}
-          onUp={()=>onReactPost(post.id,'up')}
-          onDown={()=>onReactPost(post.id,'down')}
-          disabled={!isAuthed}
+          upActive={!!props.currentUserId && (post.likesUp||[]).includes(props.currentUserId)}
+          downActive={!!props.currentUserId && (post.likesDown||[]).includes(props.currentUserId)}
+          onUp={()=>props.onReactPost(post.id,'up')}
+          onDown={()=>props.onReactPost(post.id,'down')}
+          disabled={!props.isAuthed}
         />
       </div>
 
@@ -664,57 +788,83 @@ function InlineReply({ onCancel, onSubmit }){
 }
 
 // ===== New Post with square cropper (vertical layout) =====
-function NewPost({ onCreate, isAuthed }){
-  const [file,setFile]=useState(null); const [rawDataURL,setRawDataURL]=useState(null); const [caption,setCaption]=useState(''); const [err,setErr]=useState('');
-  const inputRef=useRef(null); const dropRef=useRef(null);
-  const [scale,setScale]=useState(1); const [offset,setOffset]=useState({x:0,y:0}); const dragging=useRef(false); const lastPos=useRef({x:0,y:0});
-  useEffect(()=>{ const el=dropRef.current; if(!el) return; const prevent=e=>{e.preventDefault();e.stopPropagation();}; const onDrop=async e=>{prevent(e); const f=e.dataTransfer.files?.[0]; if(f&&(f.type.startsWith('image')||f.type.startsWith('video'))){ setFile(f); const url=await readFileAsDataURL(f); setRawDataURL(url);} }; ['dragenter','dragover','dragleave','drop'].forEach(ev=>el.addEventListener(ev,prevent)); el.addEventListener('drop',onDrop); return ()=>{ ['dragenter','dragover','dragleave','drop'].forEach(ev=>el.removeEventListener(ev,prevent)); el.removeEventListener('drop',onDrop); }; },[]);
-  const pickFile=async f=>{ if(!f) return; setFile(f); const url=await readFileAsDataURL(f); setRawDataURL(url); };
-  const onMouseDown=e=>{ dragging.current=true; lastPos.current={x:e.clientX,y:e.clientY}; };
-  const onMouseMove=e=>{ if(!dragging.current) return; const dx=e.clientX-lastPos.current.x; const dy=e.clientY-lastPos.current.y; lastPos.current={x:e.clientX,y:e.clientY}; setOffset(prev=>({x:clamp(prev.x+dx/200,-1.5,1.5), y:clamp(prev.y+dy/200,-1.5,1.5)})); };
-  const onMouseUp=()=>{ dragging.current=false; };
-  const publish=async()=>{ setErr(''); if(!isAuthed){ setErr('Log in to post'); return; } if(!file){ setErr('Please select or drop an image or video'); return; } if(!caption.trim()){ setErr('Caption is required'); return; }
-    let croppedDataURL=null; if(file.type.startsWith('image') && rawDataURL){ const img=await dataURLToImage(rawDataURL); const canvas=document.createElement('canvas'); const size=800; canvas.width=size; canvas.height=size; const ctx=canvas.getContext('2d'); ctx.fillStyle='#000'; ctx.fillRect(0,0,size,size); const vw=size*scale; const vh=vw*(img.height/img.width); const cx=size/2+offset.x*size/2; const cy=size/2+offset.y*size/2; const dx=cx-vw/2; const dy=cy-vh/2; ctx.drawImage(img,dx,dy,vw,vh); croppedDataURL=canvas.toDataURL('image/jpeg',0.92); }
-    await onCreate({ file, caption, croppedDataURL });
+function NewPost({ onCreate, isAuthed }) {
+  const [files, setFiles] = useState([]);
+  const [rawDataURLs, setRawDataURLs] = useState([]);
+  const [caption, setCaption] = useState('');
+  const [err, setErr] = useState('');
+  const inputRef = useRef(null);
+
+  const pickFiles = async fs => {
+    if (!fs || !fs.length) return;
+    const arr = Array.from(fs);
+    setFiles(arr);
+    const urls = await Promise.all(arr.map(f => readFileAsDataURL(f)));
+    setRawDataURLs(urls);
   };
-  const resetAll=()=>{ setFile(null); setRawDataURL(null); setCaption(''); setScale(1); setOffset({x:0,y:0}); setErr(''); };
+
+  const publish = async () => {
+    setErr('');
+    if (!isAuthed) { setErr('Log in to post'); return; }
+    if (!files.length) { setErr('Please select at least one image or video'); return; }
+    if (!caption.trim()) { setErr('Caption is required'); return; }
+    await onCreate({ files, caption, croppedDataURLs: rawDataURLs });
+  };
+
+  const resetAll = () => {
+    setFiles([]);
+    setRawDataURLs([]);
+    setCaption('');
+    setErr('');
+  };
+
   return (
     <div className="mt-4 bg-white border border-neutral-200 rounded-3xl p-6 shadow-sm">
       <h2 className="text-lg font-semibold mb-4">Create a new post</h2>
       {!isAuthed && <p className="text-sm text-red-600 mb-3">You must log in to publish.</p>}
       <div className="grid gap-4">
         <div className="relative">
-          <div ref={dropRef} className="relative w-full rounded-2xl overflow-hidden border border-dashed border-neutral-300 bg-neutral-50" style={{paddingTop:'100%'}} onMouseDown={onMouseDown} onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseLeave={onMouseUp}>
+          <div className="relative w-full rounded-2xl overflow-hidden border border-dashed border-neutral-300 bg-neutral-50" style={{ paddingTop: '100%' }}>
             <div className="absolute inset-0 flex items-center justify-center p-4 text-center">
-              {!file ? (
+              {files.length === 0 ? (
                 <div className="grid gap-2">
-                  <button onClick={()=>inputRef.current?.click()} className="px-4 py-2 rounded-xl bg-neutral-900 text-white">Select image or video</button>
+                  <button onClick={() => inputRef.current?.click()} className="px-4 py-2 rounded-xl bg-neutral-900 text-white">Select images or videos</button>
                   <p className="text-xs text-neutral-500">or drag & drop here</p>
                 </div>
               ) : (
-                file.type.startsWith('video') ? (
-                  <video src={rawDataURL || (file && URL.createObjectURL(file))} className="w-full h-full object-cover" controls/>
-                ) : (
-                  <div className="absolute inset-0">
-                    <img src={rawDataURL} alt="preview" className="absolute" style={{ left:`${50+offset.x*50}%`, top:`${50+offset.y*50}%`, transform:`translate(-50%,-50%) scale(${scale})`, width:'100%', height:'auto' }} />
-                    <div className="absolute inset-0 pointer-events-none border-2 border-white/60"/>
-                  </div>
-                )
+                <div className="flex gap-2 overflow-x-auto">
+                  {files.map((file, idx) => (
+                    <div key={idx} className="w-24 h-24 border rounded overflow-hidden flex-shrink-0 relative">
+                      {file.type.startsWith('video') ? (
+                        <video src={rawDataURLs[idx]} className="w-full h-full object-cover" controls />
+                      ) : (
+                        <img src={rawDataURLs[idx]} alt="preview" className="w-full h-full object-cover" />
+                      )}
+                      <button
+                        className="absolute top-1 right-1 bg-white rounded-full px-2 py-0 text-xs"
+                        onClick={() => {
+                          setFiles(files.filter((_, i) => i !== idx));
+                          setRawDataURLs(rawDataURLs.filter((_, i) => i !== idx));
+                        }}
+                        title="Remove"
+                      >×</button>
+                    </div>
+                  ))}
+                </div>
               )}
-              <input ref={inputRef} type="file" accept="image/*,video/*" className="hidden" onChange={e=>pickFile(e.target.files?.[0]||null)}/>
+              <input
+                ref={inputRef}
+                type="file"
+                accept="image/*,video/*"
+                multiple
+                className="hidden"
+                onChange={e => pickFiles(e.target.files)}
+              />
             </div>
           </div>
         </div>
-        {file && file.type.startsWith('image') && (
-          <div className="grid gap-2">
-            <label className="text-sm">Zoom
-              <input type="range" min="1" max="3" step="0.01" value={scale} onChange={e=>setScale(parseFloat(e.target.value))} className="w-full"/>
-            </label>
-            <p className="text-xs text-neutral-500">Drag the image in the square to reposition.</p>
-          </div>
-        )}
         <label className="text-sm">Caption
-          <textarea className="mt-1 w-full border border-neutral-300 rounded-xl px-3 py-2" rows={4} value={caption} onChange={e=>setCaption(e.target.value)} onKeyDown={e=>{ if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); publish(); } }} placeholder="Write a description"/>
+          <textarea className="mt-1 w-full border border-neutral-300 rounded-xl px-3 py-2" rows={4} value={caption} onChange={e => setCaption(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); publish(); } }} placeholder="Write a description" />
         </label>
         {err && <p className="text-sm text-red-600">{err}</p>}
         <div className="flex gap-2">
@@ -820,5 +970,36 @@ function Footer({ note }){
       <p>InstaFacts mock for a Generative AI course. {note}</p>
       <p className="mt-2">Zapier: Use Supabase app to insert into <code>posts</code>/<code>comments</code>. For a bot account, map a fixed <code>user_id</code>.</p>
     </footer>
+  );
+}
+
+// Spinner component
+function Spinner() {
+  return (
+    <div className="flex justify-center items-center">
+      <svg className="animate-spin h-8 w-8 text-neutral-400" viewBox="0 0 24 24">
+        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none"/>
+        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 0 0 8-8v8z"/>
+      </svg>
+    </div>
+  );
+}
+
+// Toast system
+function useToast() {
+  const [toast, setToast] = useState<string | null>(null);
+  const showToast = (msg: string) => {
+    setToast(msg);
+    setTimeout(() => setToast(null), 3500);
+  };
+  return { toast, showToast };
+}
+
+// Toast component
+function Toast({ msg }) {
+  return (
+    <div className="fixed top-4 left-1/2 -translate-x-1/2 bg-neutral-900 text-white px-4 py-2 rounded-xl shadow-lg z-50 text-sm">
+      {msg}
+    </div>
   );
 }
