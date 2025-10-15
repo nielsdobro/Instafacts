@@ -366,17 +366,17 @@ function App(){
       showToast("Sign out failed.");
     }
   };
-  const doUpdateAccount = async (p)=>{ await data.updateAccount(p); };
+  const doUpdateAccount = async (p) => { await data.updateAccount(p); };
   const doCreate = async (p) => {
     try {
       await data.createPost(p);
       window.location.hash = '#/home';
       await refresh();
-    } catch(e) {
+    } catch (e) {
       showToast("Failed to create post.");
     }
   };
-  const doUpdatePost = async (id, caption)=>{ await data.updatePost({ postId:id, caption }); await refresh(); };
+  const doUpdatePost = async (id, caption) => { await data.updatePost({ postId: id, caption }); await refresh(); };
   const doDeletePost = async (id)=>{ try { await data.deletePost({ postId:id }); await refresh(); } catch(e) { showToast("Failed to delete post."); } };
   const doAddComment = async (postId, content) => {
     if (!data || !currentUser) return;
