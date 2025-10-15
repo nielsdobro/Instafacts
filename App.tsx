@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
+import CommentBlock from './CommentBlock'; // Adjust the path as needed
 
 // InstaFacts – Cloud-ready version (Supabase + Zapier) with local fallback
 // ----------------------------------------------------------------------
@@ -421,13 +422,13 @@ function App(){
     <div className="min-h-screen bg-neutral-50 text-neutral-900">
       <TopBar currentUser={currentUser} onSignOut={doSignOut} />
       <div className="max-w-2xl mx-auto px-4 pb-24">
-        {toast && <Toast msg={toast} />}
+        {toast && <toast msg={toast} />}
         {!data && <p className="mt-8 text-center text-neutral-500">Loading…</p>}
         {loadingPosts && <div className="mt-8 text-center"><Spinner /></div>}
         {data && route==='login' && !isAuthed && <LoginCard onSignIn={doSignIn} onSignUp={doSignUp} onSeed={()=>{ if(data.mode==='local') data.seed(); refresh(); }} />}
         {data && route==='home' && (
           <HomeFeed posts={posts}
-            getUser={(id)=>resolveUsername(data, id)}
+            getUser={(id: any)=>resolveUsername(data, id)}
             onAddComment={doAddComment}
             onAddReply={doAddReply}
             onReactPost={doReactPost}
@@ -440,12 +441,12 @@ function App(){
             onDeleteComment={doDeleteComment}
           />)}
         {data && route==='new' && <NewPost onCreate={doCreate} isAuthed={isAuthed} />}
-        {data && route==='profile' && isAuthed && <Profile user={profileFromUser(currentUser)} posts={posts.filter(p=>p.userId===currentUser.id)} />}
+        {data && route==='profile' && isAuthed && <Profile user={profileFromUser(currentUser)} posts={posts.filter((p: { userId: any; })=>p.userId===currentUser.id)} />}
         {data && route.startsWith('user:') && (
           <UserPublic
             user={mockUserFromId(params.userId)}
-            posts={posts.filter(p=>p.userId===params.userId)}
-            getUser={(id)=>resolveUsername(data, id)}      
+            posts={posts.filter((p: { userId: any; })=>p.userId===params.userId)}
+            getUser={(id: any)=>resolveUsername(data, id)}      
             onReactPost={doReactPost}
             onReactComment={doReactComment}
             isAuthed={isAuthed}
@@ -583,7 +584,7 @@ function HomeFeed({ posts, getUser, onAddComment, onAddReply, onReactPost, onRea
       {posts.map(p=> (
         <PostCard key={p.id} post={p} author={getUser(p.userId)} getUser={getUser}
           onAddComment={onAddComment} onAddReply={onAddReply}
-          onReactPost={onReactPost} onReactComment={onReactComment}
+          onReactPost={onReactPost} onReactComment={doReactComment}
           isAuthed={isAuthed} currentUserId={currentUserId}
           onEditPost={onEditPost} onDeletePost={onDeletePost}
           onEditComment={onEditComment} onDeleteComment={onDeleteComment}
@@ -593,7 +594,7 @@ function HomeFeed({ posts, getUser, onAddComment, onAddReply, onReactPost, onRea
   );
 }
 
-function PostReactionsOverlay({ upActive, downActive, onUp, onDown, disabled }){
+function PostReactionsOverlay({ upActive, downActive, onUp, onDown, disabled }): any{
   return (
     <div className="absolute bottom-3 right-3 flex items-center gap-2">
       <button disabled={disabled} onClick={onUp} title="Like"
@@ -622,16 +623,36 @@ function InlineReactions({ upActive, downActive, upCount, downCount, onUp, onDow
 function ThumbUpIcon(){return (<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 9V5a3 3 0 0 0-3-3l-3 8v10h9a3 3 0 0 0 3-3v-4a3 3 0 0 0-3-3h-3z"/></svg>);} 
 function ThumbDownIcon(){return (<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10 15v4a3 3 0 0 0 3 3l3-8V4H7a3 3 0 0 0-3 3v4a3 3 0 0 0 3 3h3z"/></svg>);} 
 
-function PostCard({ post, author, getUser, ...props }){
-  const [slide, setSlide] = useState(0);
-  const mediaCount = post.media_urls?.length || 1;
-  const mediaTypes = post.mediaTypes || ["image"];
-  const media_urls = post.media_urls || [post.media_url];
+function PostCard({ post, ...props }) {
+  const [expanded, setExpanded] = useState(false);
+  const [captionDraft, setCaptionDraft] = useState(post.caption || '');
+  const [comment, setComment] = useState('');
+  const currentUserId = props.currentUserId ?? ''; // Or get from context/auth
+  const isAuthed = props.isAuthed ?? false;        // Or get from context/auth
 
-  const comments = Array.isArray(post.comments)? post.comments: []; // In Supabase mode, comments are shown when added via realtime if you extend joins.
-  const shown = expanded? comments : comments.slice(-2); const hidden=Math.max(0, comments.length - shown.length); const isOwner = currentUserId===post.userId;
-  const submitComment=()=>{ if(!isAuthed) return; if(comment.trim()) { onAddComment(post.id, comment); setComment(''); } };
-  const saveCaption=()=>{ onEditPost(post.id, captionDraft); setEditing(false); };
+  const media_urls = post.media?.map(m => m.url) || [];
+const mediaTypes = post.media?.map(m => m.type) || [];
+const mediaCount = media_urls.length;
+const [slide, setSlide] = useState(0);
+
+  const comments = Array.isArray(post.comments) ? post.comments : [];
+  const shown = expanded ? comments : comments.slice(-2);
+  const hidden = Math.max(0, comments.length - shown.length);
+  const isOwner = currentUserId === post.userId;
+
+  const submitComment = () => {
+    if (!isAuthed) return;
+    if (comment.trim()) {
+      onAddComment(post.id, comment);
+      setComment('');
+    }
+  };
+
+  const saveCaption = () => {
+    onEditPost(post.id, captionDraft);
+    setEditing(false);
+  };
+
   return (
     <article className="bg-white border border-neutral-200 rounded-3xl overflow-hidden shadow-sm">
       <div className="flex items-center justify-between p-4">
@@ -734,269 +755,172 @@ function PostCard({ post, author, getUser, ...props }){
   );
 }
 
-function CommentBlock({ postId, c, getUser, onReactComment, isAuthed, currentUserId, onAddReply, onEditComment, onDeleteComment }){
-  const [replying,setReplying]=useState(false); const [editing,setEditing]=useState(false); const [draft,setDraft]=useState(c.content); const isOwner=currentUserId===c.userId;
-  const save=()=>{ onEditComment(postId, c.id, null, draft); setEditing(false); };
-  return (
-    <div>
-      <div className="text-sm">
-        <span className="font-semibold">{getUser(c.userId)?.username||'user'}</span> {editing? (<textarea className="w-full border border-neutral-300 rounded-xl px-3 py-2 text-sm mt-2" value={draft} onChange={e=>setDraft(e.target.value)} onKeyDown={e=>{ if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); save(); } }} />) : (<>{c.content} {c.edited && <span className="text-neutral-400">(edited)</span>}</>)}
-      </div>
-      <div className="mt-1 flex flex-wrap items-center gap-3 text-xs text-neutral-500">
-        <span>{timeAgo(c.createdAt)}</span>
-        {isAuthed && !editing && <button className="hover:underline" onClick={()=>setReplying(true)}>Reply</button>}
-        <InlineReactions upActive={!!currentUserId && (c.likesUp||[]).includes(currentUserId)} downActive={!!currentUserId && (c.likesDown||[]).includes(currentUserId)} upCount={(c.likesUp||[]).length} downCount={(c.likesDown||[]).length} onUp={()=>onReactComment(postId,c.id,null,'up')} onDown={()=>onReactComment(postId,c.id,null,'down')} disabled={!isAuthed}/>
-        {isOwner && !editing && (<><button className="hover:underline" onClick={()=>setEditing(true)}>Edit</button><button className="hover:underline text-red-600" onClick={()=>onDeleteComment(postId, c.id, null)}>Delete</button></>)}
-        {editing && (<><button className="hover:underline" onClick={()=>setEditing(false)}>Cancel</button><button className="hover:underline text-green-600" onClick={save}>Save</button></>)}
-      </div>
-      {!!(c.replies||[]).length && (
-        <div className="mt-2 ml-3 border-l border-neutral-200 pl-3 grid gap-2">
-          {(c.replies||[]).map(r=> (<ReplyBlock key={r.id} postId={postId} commentId={c.id} r={r} getUser={getUser} onReactComment={onReactComment} isAuthed={isAuthed} currentUserId={currentUserId} onEditComment={onEditComment} onDeleteComment={onDeleteComment}/>))}
-        </div>
-      )}
-      {replying && isAuthed && <InlineReply onCancel={()=>setReplying(false)} onSubmit={(text)=>{ onAddReply(postId, c.id, text); setReplying(false); }}/>}    
-    </div>
-  );
-}
+type Comment = {
+  id: string;
+  // ...other fields...
+};
 
-function ReplyBlock({ postId, commentId, r, getUser, onReactComment, isAuthed, currentUserId, onEditComment, onDeleteComment }){
-  const [editing,setEditing]=useState(false); const [draft,setDraft]=useState(r.content); const isOwner=currentUserId===r.userId; const save=()=>{ onEditComment(postId, commentId, r.id, draft); setEditing(false); };
-  return (
-    <div className="text-sm">
-      <span className="font-semibold">{getUser(r.userId)?.username||'user'}</span> {editing? (<textarea className="w-full border border-neutral-300 rounded-xl px-3 py-2 text-sm mt-2" value={draft} onChange={e=>setDraft(e.target.value)} onKeyDown={e=>{ if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); save(); } }} />) : (<>{r.content} {r.edited && <span className="text-neutral-400">(edited)</span>}</>)}
-        <InlineReactions upActive={!!currentUserId && (r.likesUp||[]).includes(currentUserId)} downActive={!!currentUserId && (r.likesDown||[]).includes(currentUserId)} upCount={(r.likesUp||[]).length} downCount={(r.likesDown||[]).length} onUp={()=>onReactComment(postId,commentId,r.id,'up')} onDown={()=>onReactComment(postId,commentId,r.id,'down')} disabled={!isAuthed}/>
-        {isOwner && !editing && (<><button className="hover:underline" onClick={()=>setEditing(true)}>Edit</button><button className="hover:underline text-red-600" onClick={()=>onDeleteComment(postId, commentId, r.id)}>Delete</button></>)}
-        {editing && (<><button className="hover:underline" onClick={()=>setEditing(false)}>Cancel</button><button className="hover:underline text-green-600" onClick={save}>Save</button></>)}
-      </div>
-    </div>[]).length} downCount={(r.likesDown||[]).length} onUp={()=>onReactComment(postId,commentId,r.id,'up')} onDown={()=>onReactComment(postId,commentId,r.id,'down')} disabled={!isAuthed}/>
-  );wner && !editing && (<><button className="hover:underline" onClick={()=>setEditing(true)}>Edit</button><button className="hover:underline text-red-600" onClick={()=>onDeleteComment(postId, commentId, r.id)}>Delete</button></>)}
-}diting && (<><button className="hover:underline" onClick={()=>setEditing(false)}>Cancel</button><button className="hover:underline text-green-600" onClick={save}>Save</button></>)}
-  </div>
-function InlineReply({ onCancel, onSubmit }){   </div>
-  const [v,setV]=useState(''); const onSend=()=>{ if(v.trim()) onSubmit(v); };  );
-  return (
-    <div className="mt-2 flex gap-2">
-      <input value={v} onChange={e=>setV(e.target.value)} onKeyDown={e=>{ if(e.key==='Enter'){ e.preventDefault(); onSend(); } }} placeholder="Write a reply" className="flex-1 border border-neutral-300 rounded-xl px-3 py-2 text-sm"/>nlineReply({ onCancel, onSubmit }){
-      <button onClick={onCancel} className="px-3 py-2 rounded-xl border border-neutral-300 text-sm">Cancel</button>onSend=()=>{ if(v.trim()) onSubmit(v); };
-      <button onClick={onSend} className="px-3 py-2 rounded-xl bg-neutral-900 text-white text-sm">Reply</button>
-    </div>
-  );); onSend(); } }} placeholder="Write a reply" className="flex-1 border border-neutral-300 rounded-xl px-3 py-2 text-sm"/>
-}ton onClick={onCancel} className="px-3 py-2 rounded-xl border border-neutral-300 text-sm">Cancel</button>
-  <button onClick={onSend} className="px-3 py-2 rounded-xl bg-neutral-900 text-white text-sm">Reply</button>
-// ===== New Post with square cropper (vertical layout) =====   </div>
-function NewPost({ onCreate, isAuthed }) {  );
-  const [files, setFiles] = useState([]);
-  const [rawDataURLs, setRawDataURLs] = useState([]);
-  const [caption, setCaption] = useState('');rtical layout) =====
-  const [err, setErr] = useState('');
-  const inputRef = useRef(null);
- = useState([]);
-  const pickFiles = async fs => {useState('');
-    if (!fs || !fs.length) return;  const [err, setErr] = useState('');
-    const arr = Array.from(fs);
-    setFiles(arr);
-    const urls = await Promise.all(arr.map(f => readFileAsDataURL(f))); {
-    setRawDataURLs(urls);.length) return;
-  };
+type PostProps = {
+  post: { id: string; caption: string; edited?: boolean };
+  comments: Comment[];
+  getUser: (id: string) => any;
+  onReactComment: Function;
+  isAuthed: boolean;
+  currentUserId: string;
+  onAddReply: Function;
+  onEditComment: Function;
+  onDeleteComment: Function;
+};
 
-  const publish = async () => {const urls = await Promise.all(arr.map(f => readFileAsDataURL(f)));
-    setErr('');    setRawDataURLs(urls);
-    if (!isAuthed) { setErr('Log in to post'); return; }
-    if (!files.length) { setErr('Please select at least one image or video'); return; }
-    if (!caption.trim()) { setErr('Caption is required'); return; }
-    await onCreate({ files, caption, croppedDataURLs: rawDataURLs });
-  };
-video'); return; }
-  const resetAll = () => {if (!caption.trim()) { setErr('Caption is required'); return; }
-    setFiles([]);    await onCreate({ files, caption, croppedDataURLs: rawDataURLs });
-    setRawDataURLs([]);
-    setCaption('');
-    setErr('');> {
-  };
-RLs([]);
-  return (setCaption('');
-    <div className="mt-4 bg-white border border-neutral-200 rounded-3xl p-6 shadow-sm">    setErr('');
-      <h2 className="text-lg font-semibold mb-4">Create a new post</h2>
-      {!isAuthed && <p className="text-sm text-red-600 mb-3">You must log in to publish.</p>}
-      <div className="grid gap-4">
-        <div className="relative">
-          <div className="relative w-full rounded-2xl overflow-hidden border border-dashed border-neutral-300 bg-neutral-50" style={{ paddingTop: '100%' }}>semibold mb-4">Create a new post</h2>
-            <div className="absolute inset-0 flex items-center justify-center p-4 text-center">text-sm text-red-600 mb-3">You must log in to publish.</p>}
-              {files.length === 0 ? (
-                <div className="grid gap-2">
-                  <button onClick={() => inputRef.current?.click()} className="px-4 py-2 rounded-xl bg-neutral-900 text-white">Select images or videos</button>full rounded-2xl overflow-hidden border border-dashed border-neutral-300 bg-neutral-50" style={{ paddingTop: '100%' }}>
-                  <p className="text-xs text-neutral-500">or drag & drop here</p> flex items-center justify-center p-4 text-center">
-                </div>
-              ) : (
-                <div className="flex gap-2 overflow-x-auto">ton onClick={() => inputRef.current?.click()} className="px-4 py-2 rounded-xl bg-neutral-900 text-white">Select images or videos</button>
-                  {files.map((file, idx) => (p className="text-xs text-neutral-500">or drag & drop here</p>
-                    <div key={idx} className="w-24 h-24 border rounded overflow-hidden flex-shrink-0 relative">
-                      {file.type.startsWith('video') ? (
-                        <video src={rawDataURLs[idx]} className="w-full h-full object-cover" controls />
-                      ) : (
-                        <img src={rawDataURLs[idx]} alt="preview" className="w-full h-full object-cover" />ative">
-                      )}.type.startsWith('video') ? (
-                      <button
-                        className="absolute top-1 right-1 bg-white rounded-full px-2 py-0 text-xs": (
-                        onClick={() => {src={rawDataURLs[idx]} alt="preview" className="w-full h-full object-cover" />
-                          setFiles(files.filter((_, i) => i !== idx));
-                          setRawDataURLs(rawDataURLs.filter((_, i) => i !== idx));
-                        }}nded-full px-2 py-0 text-xs"
-                        title="Remove"
-                      >×</button>setFiles(files.filter((_, i) => i !== idx));
-                    </div>Ls(rawDataURLs.filter((_, i) => i !== idx));
-                  ))}
-                </div>tle="Remove"
-              )} >×</button>
-              <inputdiv>
-                ref={inputRef}  ))}
-                type="file"v>
-                accept="image/*,video/*"
-                multiple
-                className="hidden"
-                onChange={e => pickFiles(e.target.files)}le"
-              />deo/*"
+function Post({
+  post,
+  comments,
+  getUser,
+  onReactComment,
+  isAuthed,
+  currentUserId,
+  onAddReply,
+  onEditComment,
+  onDeleteComment,
+}: PostProps) {
+  const [editing, setEditing] = useState(false);
+  const [captionDraft, setCaptionDraft] = useState(post.caption);
+  const [expanded, setExpanded] = useState(false);
+  const [comment, setComment] = useState('');
+
+  // Example logic for shown/hidden comments
+  const hidden = Math.max(0, comments.length - 3);
+  const shown = expanded ? comments : comments.slice(-3);
+
+  function saveCaption() {
+    // Save logic here
+    setEditing(false);
+  }
+
+  function submitComment() {
+    // Submit logic here
+    setComment('');
+  }
+
+  return (
+    <article>
+      <div className="p-4">
+        {!editing ? (
+          <p className="text-sm whitespace-pre-wrap break-words">
+            {post.caption}{' '}
+            {post.edited && (
+              <span className="text-neutral-400">(edited)</span>
+            )}
+          </p>
+        ) : (
+          <textarea
+            className="w-full border border-neutral-300 rounded-xl px-3 py-2 text-sm"
+            value={captionDraft}
+            onChange={e => setCaptionDraft(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                saveCaption();
+              }
+            }}
+          />
+        )}
+        {!isAuthed && (
+          <p className="text-xs text-neutral-500 mt-2">
+            Log in to like or comment.
+          </p>
+        )}
+
+        {!!comments.length && (
+          <div className="mt-3">
+            {hidden > 0 && !expanded && (
+              <button
+                className="text-sm text-neutral-600 hover:underline"
+                onClick={() => setExpanded(true)}
+              >
+                Show more comments ({hidden})
+              </button>
+            )}
+            <div className="mt-2 grid gap-3">
+              {shown.map(c => (
+                <CommentBlock
+                  key={c.id}
+                  postId={post.id}
+                  c={c}
+                  getUser={getUser}
+                  onReactComment={onReactComment}
+                  isAuthed={isAuthed}
+                  currentUserId={currentUserId}
+                  onAddReply={onAddReply}
+                  onEditComment={onEditComment}
+                  onDeleteComment={onDeleteComment}
+                />
+              ))}
             </div>
-          </div>className="hidden"
-        </div>Change={e => pickFiles(e.target.files)}
-        <label className="text-sm">Caption
-          <textarea className="mt-1 w-full border border-neutral-300 rounded-xl px-3 py-2" rows={4} value={caption} onChange={e => setCaption(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); publish(); } }} placeholder="Write a description" />div>
-        </label>
-        {err && <p className="text-sm text-red-600">{err}</p>}
-        <div className="flex gap-2">lassName="text-sm">Caption
-          <button onClick={publish} className="px-4 py-2 rounded-xl bg-neutral-900 text-white" disabled={!isAuthed}>Publish</button>al-300 rounded-xl px-3 py-2" rows={4} value={caption} onChange={e => setCaption(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); publish(); } }} placeholder="Write a description" />
-          <button onClick={resetAll} className="px-4 py-2 rounded-xl border border-neutral-300">Reset</button>
+            {expanded && hidden > 0 && (
+              <button
+                className="mt-2 text-sm text-neutral-600 hover:underline"
+                onClick={() => setExpanded(false)}
+              >
+                Show less
+              </button>
+            )}
+          </div>
+        )}
+
+        <div className="mt-3 flex gap-2">
+          <input
+            value={comment}
+            onChange={e => setComment(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                submitComment();
+              }
+            }}
+            placeholder={isAuthed ? 'Add a comment' : 'Log in to comment'}
+            disabled={!isAuthed}
+            className="flex-1 border border-neutral-300 rounded-xl px-3 py-2 text-sm disabled:bg-neutral-100"
+          />
+          <button
+            onClick={submitComment}
+            disabled={!isAuthed || !comment.trim()}
+            className={
+              (!isAuthed || !comment.trim())
+                ? 'px-3 py-2 rounded-xl text-sm bg-neutral-200 text-neutral-500'
+                : 'px-3 py-2 rounded-xl text-sm bg-neutral-900 text-white'
+            }
+          >
+            Post
+          </button>
         </div>
       </div>
-    </div>ton onClick={publish} className="px-4 py-2 rounded-xl bg-neutral-900 text-white" disabled={!isAuthed}>Publish</button>
-  );utton onClick={resetAll} className="px-4 py-2 rounded-xl border border-neutral-300">Reset</button>
-}div>
-  </div>
-function Profile({ user, posts }){   </div>
-  return (  );
-    <div className="mt-4">
-      <div className="bg-white border border-neutral-200 rounded-3xl p-6 shadow-sm">
-        <div className="flex items-center gap-4">osts }){
-          <div className="w-16 h-16 rounded-full bg-gradient-to-br from-pink-500 to-purple-600 text-white flex items-center justify-center text-xl font-semibold">{user.username[0].toUpperCase()}</div>
-          <div>
-            <h2 className="text-lg font-semibold">{user.username}</h2>
-            <p className="text-sm text-neutral-700 whitespace-pre-wrap mt-1">{user.bio||''}</p>assName="flex items-center gap-4">
-          </div>m-pink-500 to-purple-600 text-white flex items-center justify-center text-xl font-semibold">{user.username[0].toUpperCase()}</div>
-        </div>
-      </div>className="text-lg font-semibold">{user.username}</h2>
-      <h3 className="mt-6 mb-3 font-semibold">Your posts</h3> className="text-sm text-neutral-700 whitespace-pre-wrap mt-1">{user.bio||''}</p>
-      {!posts.length? <p className="text-neutral-500">No posts yet.</p> : (div>
-        <div className="grid gap-6">
-          {posts.map(p=> (
-            <PostCard key={p.id} post={p} author={user} getUser={(id)=>user}semibold">Your posts</h3>
-              onAddComment={()=>{}} onAddReply={()=>{}} onReactPost={()=>{}} onReactComment={()=>{}}lassName="text-neutral-500">No posts yet.</p> : (
-              isAuthed={true} currentUserId={user.id}
-              onEditPost={()=>{}} onDeletePost={()=>{}} onEditComment={()=>{}} onDeleteComment={()=>{}} />
-          ))}r} getUser={(id)=>user}
-        </div>
-      )} isAuthed={true} currentUserId={user.id}
-    </div>onEditPost={()=>{}} onDeletePost={()=>{}} onEditComment={()=>{}} onDeleteComment={()=>{}} />
-  );  ))}
-}div>
-  )}
-function UserPublic({ user, posts, getUser, onReactPost, onReactComment, isAuthed, onAddComment, onAddReply, currentUserId, onEditPost, onDeletePost, onEditComment, onDeleteComment }){   </div>
-  if(!user) return <p className="mt-6 text-neutral-500">User not found.</p>;  );
-  return (
-    <div className="mt-4">
-      <div className="bg-white border border-neutral-200 rounded-3xl p-6 shadow-sm">serPublic({ user, posts, getUser, onReactPost, onReactComment, isAuthed, onAddComment, onAddReply, currentUserId, onEditPost, onDeletePost, onEditComment, onDeleteComment }){
-        <div className="flex items-center gap-4">sName="mt-6 text-neutral-500">User not found.</p>;
-          <div className="w-16 h-16 rounded-full bg-gradient-to-br from-pink-500 to-purple-600 text-white flex items-center justify-center text-xl font-semibold">{user.username[0].toUpperCase()}</div>
-          <div>
-            <h2 className="text-lg font-semibold">{user.username}</h2>
-            <p className="text-sm text-neutral-700 whitespace-pre-wrap">{user.bio||''}</p>assName="flex items-center gap-4">
-          </div>m-pink-500 to-purple-600 text-white flex items-center justify-center text-xl font-semibold">{user.username[0].toUpperCase()}</div>
-        </div>
-      </div>className="text-lg font-semibold">{user.username}</h2>
-      <h3 className="mt-6 mb-3 font-semibold">Posts</h3> className="text-sm text-neutral-700 whitespace-pre-wrap">{user.bio||''}</p>
-      {!posts.length? <p className="text-neutral-500">No posts yet.</p> : (div>
-        <div className="grid gap-6">
-          {posts.map(p=> (
-            <PostCard key={p.id} post={p} author={user} getUser={getUser}semibold">Posts</h3>
-              onAddComment={onAddComment} onAddReply={onAddReply}lassName="text-neutral-500">No posts yet.</p> : (
-              onReactPost={onReactPost} onReactComment={onReactComment}
-              isAuthed={isAuthed} currentUserId={currentUserId}
-              onEditPost={onEditPost} onDeletePost={onDeletePost}r}
-              onEditComment={onEditComment} onDeleteComment={onDeleteComment} />y}
-          ))}mment}
-        </div>
-      )} onEditPost={onEditPost} onDeletePost={onDeletePost}
-    </div>onEditComment={onEditComment} onDeleteComment={onDeleteComment} />
-  );  ))}
-}div>
-  )}
-function AccountSettings({ user, onSave }){   </div>
-  const [editing,setEditing]=useState(false); const [username,setUsername]=useState(user.username); const [bio,setBio]=useState(user.bio||''); const [err,setErr]=useState('');  );
-  const submit=async()=>{ try{ await onSave({ username, bio }); setEditing(false); setErr(''); } catch(e){ setErr(String(e.message||e)); } };
-  return (
-    <div className="mt-4 bg-white border border-neutral-200 rounded-3xl p-6 shadow-sm">
-      <h2 className="text-lg font-semibold mb-3">Account</h2>diting,setEditing]=useState(false); const [username,setUsername]=useState(user.username); const [bio,setBio]=useState(user.bio||''); const [err,setErr]=useState('');
-      {!editing ? (rr(''); } catch(e){ setErr(String(e.message||e)); } };
-        <div className="grid gap-3">
-          <div><span className="text-sm text-neutral-500">Username</span><div className="font-medium">{user.username}</div></div>"mt-4 bg-white border border-neutral-200 rounded-3xl p-6 shadow-sm">
-          <div><span className="text-sm text-neutral-500">Bio</span><div className="whitespace-pre-wrap">{user.bio||''}</div></div>mibold mb-3">Account</h2>
-          <div><button onClick={()=>setEditing(true)} className="px-4 py-2 rounded-xl bg-neutral-900 text-white">Edit</button></div>
-        </div>
-      ) : (
-        <div className="grid gap-3">><span className="text-sm text-neutral-500">Bio</span><div className="whitespace-pre-wrap">{user.bio||''}</div></div>
-          <label className="text-sm">Usernamediv><button onClick={()=>setEditing(true)} className="px-4 py-2 rounded-xl bg-neutral-900 text-white">Edit</button></div>
-            <input className="mt-1 w-full border border-neutral-300 rounded-xl px-3 py-2" value={username} onChange={e=>setUsername(e.target.value)}/>
-          </label>
-          <label className="text-sm">Bio
-            <textarea className="mt-1 w-full border border-neutral-300 rounded-xl px-3 py-2" rows={4} value={bio} onChange={e=>setBio(e.target.value)}/>lassName="text-sm">Username
-          </label>l border border-neutral-300 rounded-xl px-3 py-2" value={username} onChange={e=>setUsername(e.target.value)}/>
-          {err && <p className="text-sm text-red-600">{err}</p>}
-          <div className="flex gap-2">lassName="text-sm">Bio
-            <button onClick={submit} className="px-4 py-2 rounded-xl bg-neutral-900 text-white">Save</button>al-300 rounded-xl px-3 py-2" rows={4} value={bio} onChange={e=>setBio(e.target.value)}/>
-            <button onClick={()=>{ setEditing(false); setUsername(user.username); setBio(user.bio||''); setErr(''); }} className="px-4 py-2 rounded-xl border border-neutral-300">Cancel</button>
-          </div>
-        </div>
-      )}ton onClick={submit} className="px-4 py-2 rounded-xl bg-neutral-900 text-white">Save</button>
-    </div>utton onClick={()=>{ setEditing(false); setUsername(user.username); setBio(user.bio||''); setErr(''); }} className="px-4 py-2 rounded-xl border border-neutral-300">Cancel</button>
-  );  </div>
-}div>
-  )}
-function Footer({ note }){   </div>
-  return (  );
-    <footer className="mt-14 border-t border-neutral-200 py-8 text-center text-xs text-neutral-500">
-      <p>InstaFacts mock for a Generative AI course. {note}</p>
-      <p className="mt-2">Zapier: Use Supabase app to insert into <code>posts</code>/<code>comments</code>. For a bot account, map a fixed <code>user_id</code>.</p>
-    </footer>
+    </article>
   );
-}aFacts mock for a Generative AI course. {note}</p>
-  <p className="mt-2">Zapier: Use Supabase app to insert into <code>posts</code>/<code>comments</code>. For a bot account, map a fixed <code>user_id</code>.</p>
-// Spinner component   </footer>
-function Spinner() {  );
-  return (
-    <div className="flex justify-center items-center">
-      <svg className="animate-spin h-8 w-8 text-neutral-400" viewBox="0 0 24 24"> component
-        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none"/>
-        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 0 0 8-8v8z"/>
-      </svg>
-    </div>
-  );cle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none"/>
-}ath className="opacity-75" fill="currentColor" d="M4 12a8 8 0 0 0 8-8v8z"/>
-  </svg>
-// Toast system   </div>
-function useToast() {  );
-  const [toast, setToast] = useState<string | null>(null);
-  const showToast = (msg: string) => {
-    setToast(msg);
-    setTimeout(() => setToast(null), 3500);
-  };tToast] = useState<string | null>(null);
-  return { toast, showToast };
-}setToast(msg);
-null), 3500);
-// Toast component };
-function Toast({ msg }) {  return { toast, showToast };
-  return (
-    <div className="fixed top-4 left-1/2 -translate-x-1/2 bg-neutral-900 text-white px-4 py-2 rounded-xl shadow-lg z-50 text-sm">
-      {msg}omponent
-    </div>
-  );
-}lassName="fixed top-4 left-1/2 -translate-x-1/2 bg-neutral-900 text-white px-4 py-2 rounded-xl shadow-lg z-50 text-sm">
 }
+function onAddComment(id: any, comment: any) {
+  throw new Error("Function not implemented.");
+}
+
+function setComment(arg0: string) {
+  throw new Error("Function not implemented.");
+}
+
+function onEditPost(id: any, captionDraft: any) {
+  throw new Error("Function not implemented.");
+}
+
+function setEditing(arg0: boolean) {
+  throw new Error("Function not implemented.");
+}
+
+// Add this inside App.tsx if a component is missing
+function Spinner() { return <div>Loading...</div>; }
+function NewPost(props) { return <div>New Post Component</div>; }
+function Profile(props) { return <div>Profile Component</div>; }
+function UserPublic(props) { return <div>User Public Component</div>; }
+function AccountSettings(props) { return <div>Account Settings Component</div>; }
+function Footer(props) { return <footer>Footer</footer>; }
+
+export default App;
+
