@@ -11,14 +11,17 @@ const timeAgo = (ts:number) => { const s=Math.floor((Date.now()-ts)/1000); if(s<
 function useToast(){ const [toast, setToast] = useState<string|null>(null); const t = useRef<number|undefined>(undefined); const showToast=(msg:string,ms=2000)=>{ setToast(msg); if(t.current) window.clearTimeout(t.current); t.current=window.setTimeout(()=>setToast(null),ms); }; useEffect(()=>()=>{ if(t.current) window.clearTimeout(t.current); },[]); return { toast, showToast }; }
 function Toast({ msg }:{ msg:string }){ return <div className="fixed top-3 left-1/2 -translate-x-1/2 bg-neutral-900 text-white px-4 py-2 rounded-xl shadow z-50">{msg}</div>; }
 
+type Profile = { id: string; username: string; bio?: string; email?: string };
+
 type DataLayer = {
   mode: 'supabase'|'local';
   currentUser: { id:string, email?:string } | null;
   isAdmin: boolean;
-  signIn(p:{email:string, password:string}): Promise<void>;
-  signUp(p:{email:string, password:string}): Promise<void>;
+  signIn(p:{ identifier:string, password:string }): Promise<void>;
+  signUp(p:{ email:string, password:string, username?:string, bio?:string }): Promise<void>;
   signOut(): Promise<void>;
   listPosts(): Promise<Post[]>;
+  getProfile(id:string): Promise<Profile | null>;
   addComment(p:{ postId:string, content:string }): Promise<void>;
   updatePost(p:{ postId:string, caption:string }): Promise<void>;
   deletePost(p:{ postId:string }): Promise<void>;
@@ -58,14 +61,39 @@ async function createSupabaseLayer(supabase:any, adminEmail?:string): Promise<Da
   const user = await getUser();
   const isAdmin = !!(user?.email && adminEmail && user.email.toLowerCase()===adminEmail.toLowerCase());
   const bucket = import.meta.env.VITE_SUPABASE_BUCKET || 'media';
+  const cache = new Map<string, any>();
+  const _getProfile = async (id:string) => {
+    if (cache.has(id)) return cache.get(id);
+    const { data } = await supabase.from('profiles').select('id, username, bio, email').eq('id', id).maybeSingle();
+    if (data) cache.set(id, data);
+    return data;
+  };
   return {
     mode:'supabase',
     currentUser: user? { id:user.id, email:user.email }: null,
     isAdmin,
-    async signIn({ email, password }){ const { error } = await supabase.auth.signInWithPassword({ email, password }); if(error) throw error; },
-    async signUp({ email, password }){ const { error } = await supabase.auth.signUp({ email, password }); if(error) throw error; },
-    async signOut(){ await supabase.auth.signOut(); },
-    async listPosts(){
+    async signIn({ identifier, password }){
+      const isEmail = /.+@.+\..+/.test(identifier);
+      let email = identifier;
+      if (!isEmail){
+        const { data, error } = await supabase.from('profiles').select('email').eq('username', identifier).maybeSingle();
+        if (error || !data?.email) throw new Error('Username not found');
+        email = data.email;
+      }
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) throw error;
+    },
+    async signUp({ email, password, username, bio }){
+      const { data, error } = await supabase.auth.signUp({ email, password });
+      if (error) throw error;
+      const u = data.user || (await getUser());
+      if (!u) return;
+      if (username){
+        const { error: e2 } = await supabase.from('profiles').insert({ id: u.id, username, bio: bio||'', email });
+        if (e2) throw e2;
+      }
+    },
+    async signOut(){ await supabase.auth.signOut(); },async listPosts(){
       const { data: posts, error: e1 } = await supabase.from('posts').select('*').order('created_at',{ascending:false}).limit(50);
       if (e1) throw e1;
       if (!posts?.length) return [] as Post[];
@@ -80,6 +108,7 @@ async function createSupabaseLayer(supabase:any, adminEmail?:string): Promise<Da
       });
       return posts.map((p:any)=>({ id:p.id, userId:p.user_id, caption:p.caption, createdAt:new Date(p.created_at).getTime(), media_urls:p.media_urls||[], mediaTypes:p.media_types||[], comments: byPost.get(p.id)||[], likesUp:p.likes_up||[], likesDown:p.likes_down||[], edited: !!p.edited }));
     },
+    async getProfile(id:string){ return await _getProfile(id); },
     async createPost({ files, caption }){
       const u = await getUser();
       if (!u) throw new Error('Login required');
@@ -100,7 +129,9 @@ async function createSupabaseLayer(supabase:any, adminEmail?:string): Promise<Da
       if (error) throw error;
     },
     async addComment({ postId, content }){
-      const { error } = await supabase.from('comments').insert({ post_id: postId, content });
+      const u = await getUser();
+      if (!u) throw new Error('Login required');
+      const { error } = await supabase.from('comments').insert({ post_id: postId, user_id: u.id, content });
       if (error) throw error;
     },
     async updatePost({ postId, caption }){
@@ -139,15 +170,25 @@ function createLocalLayer(): DataLayer{
   const state = {
     currentUser: null as { id:string, email?:string } | null,
     posts: [] as Post[],
+    profiles: new Map<string, Profile>()
   };
   return {
     mode:'local',
     currentUser: state.currentUser,
     isAdmin: true,
-    async signIn(){ state.currentUser = { id:'user_local' }; },
-    async signUp(){ state.currentUser = { id:'user_local' }; },
+    async signIn({ identifier }){
+      const id = identifier || 'user_local';
+      state.currentUser = { id, email: identifier && identifier.indexOf('@')>0 ? identifier : undefined };
+      if (!state.profiles.has(id)) state.profiles.set(id, { id, username: id, bio:'', email: state.currentUser.email });
+    },
+    async signUp({ email, username, bio }){
+      const id = username || email || 'user_local';
+      state.currentUser = { id, email };
+      state.profiles.set(id, { id, username: username||id, bio: bio||'', email });
+    },
     async signOut(){ state.currentUser = null; },
     async listPosts(){ return state.posts; },
+    async getProfile(id:string){ return state.profiles.get(id) || { id, username:id, bio:'' }; },
     async createPost({ files, caption }){ const urls: string[] = []; const types: ("image"|"video")[] = []; for (const f of files){ if (!f) continue; const isVideo = f.type.startsWith('video'); urls.push(URL.createObjectURL(f)); types.push(isVideo? 'video':'image'); } state.posts = [{ id:uid('p'), userId: state.currentUser?.id||'user_local', caption, createdAt: Date.now(), media_urls: urls, mediaTypes: types, comments:[], likesUp:[], likesDown:[], edited:false }, ...state.posts ]; },
     async addComment({ postId, content }){ state.posts = state.posts.map(p=> p.id===postId? { ...p, comments:[...p.comments, { id:uid('c'), userId: state.currentUser?.id||'user_local', content, createdAt:Date.now(), replies:[], likesUp:[], likesDown:[] } ] } : p ); },
     async updatePost({ postId, caption }){ state.posts = state.posts.map(p=> p.id===postId? { ...p, caption, edited:true } : p ); },
@@ -155,15 +196,15 @@ function createLocalLayer(): DataLayer{
     async toggleReactPost(){},
     async deleteAllPostsByUser(userId:string){ state.posts = state.posts.filter(p=>p.userId!==userId); },
     seed(){
+      state.profiles.set('alice', { id:'alice', username:'alice', bio:'' });
+      state.profiles.set('bob', { id:'bob', username:'bob', bio:'' });
       state.posts = [
-        { id:uid('p'), userId:'alice', caption:'Hello Supabase 👋', createdAt:Date.now()-60000, media_urls:[], mediaTypes:[], comments:[], likesUp:[], likesDown:[], edited:false},
+        { id:uid('p'), userId:'alice', caption:'Hello Supabase ??', createdAt:Date.now()-60000, media_urls:[], mediaTypes:[], comments:[], likesUp:[], likesDown:[], edited:false},
         { id:uid('p'), userId:'bob', caption:'Second post', createdAt:Date.now()-3600000, media_urls:[], mediaTypes:[], comments:[], likesUp:[], likesDown:[], edited:false},
       ];
     }
   };
-}
-
-function App(){
+}function App(){
   const data = useDataLayer();
   const [route, setRoute] = useState<string>(()=>parseHash());
   const [posts, setPosts] = useState<Post[]>([]);
@@ -176,8 +217,8 @@ function App(){
 
   async function refresh(){ if(!data) return; try { setLoading(true); const list = await data.listPosts(); setPosts(list); } catch(e:any){ showToast('Failed to load posts'); } finally { setLoading(false);} }
 
-  const doSignIn = async ({ email, password }:{ email:string, password:string })=>{ try { await data?.signIn({ email, password }); window.location.hash = '#/home'; refresh(); } catch(e:any){ showToast(e.message||'Sign in failed'); } };
-  const doSignUp = async ({ email, password }:{ email:string, password:string })=>{ try { await data?.signUp({ email, password }); window.location.hash = '#/home'; refresh(); } catch(e:any){ showToast(e.message||'Sign up failed'); } };
+  const doSignIn = async ({ identifier, password }:{ identifier:string, password:string })=>{ try { await data?.signIn({ identifier, password }); window.location.hash = '#/home'; refresh(); } catch(e:any){ showToast(e.message||'Sign in failed'); } };
+  const doSignUp = async ({ email, password, username, bio }:{ email:string, password:string, username?:string, bio?:string })=>{ try { await data?.signUp({ email, password, username, bio }); window.location.hash = '#/home'; refresh(); } catch(e:any){ showToast(e.message||'Sign up failed'); } };
   const doSignOut = async ()=>{ try { await data?.signOut(); window.location.hash = '#/home'; refresh(); } catch(e:any){ showToast('Sign out failed'); } };
 
   const onAddComment = async (postId:string, content:string)=>{ try { await data?.addComment({ postId, content }); refresh(); } catch(e:any){ showToast('Failed to add comment'); } };
@@ -201,7 +242,7 @@ function App(){
                 <AdminPanel posts={posts} onDeleteAll={deleteAllByUser} />
               )}
               {loading ? <FeedSkeleton /> : (
-                <HomeFeed posts={posts} getUser={(id)=>({ id, username:id, bio:'' })}
+                <HomeFeed posts={posts} getUser={(id)=>data?.getProfile(id)}
                   onAddComment={onAddComment} onReactPost={onReactPost}
                   isAuthed={isAuthed} currentUserId={data?.currentUser?.id||''}
                   onEditPost={onEditPost} onDeletePost={onDeletePost}
@@ -262,22 +303,30 @@ function Logo({ size = 28 }:{ size?: number }){
   );
 }
 
-function LoginCard({ onSignIn, onSignUp }:{ onSignIn:(p:{email:string,password:string})=>void, onSignUp:(p:{email:string,password:string})=>void }){
+function LoginCard({ onSignIn, onSignUp }:{ onSignIn:(p:{identifier:string,password:string})=>void, onSignUp:(p:{email:string,password:string,username?:string,bio?:string})=>void }){
   const [mode,setMode]=useState<'signin'|'signup'>('signin');
+  const [identifier,setIdentifier]=useState('');
   const [email,setEmail]=useState('');
   const [password,setPassword]=useState('');
+  const [username,setUsername]=useState('');
+  const [bio,setBio]=useState('');
   const [showPwd,setShowPwd]=useState(false);
   const [err,setErr] = useState('');
-  const ADMIN_EMAIL = (import.meta as any).env?.VITE_ADMIN_EMAIL as string | undefined;
-  const isEmail=(v:string)=>/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
+  const isEmail=(v:string)=>/.+@.+\..+/.test(v);
   const submit=()=>{
     setErr('');
+    if (mode==='signin'){
+      if(!identifier){ setErr('Enter email or username'); return; }
+      if(!password){ setErr('Password required'); return; }
+      onSignIn({ identifier, password });
+      return;
+    }
     if (!isEmail(email)) { setErr('Please enter a valid email address'); return; }
     if (!password) { setErr('Password is required'); return; }
-    if(mode==='signin') onSignIn({ email, password }); else onSignUp({ email, password });
+    if (!username) { setErr('Choose a username'); return; }
+    onSignUp({ email, password, username, bio });
   };
   const onKeyDown=(e:React.KeyboardEvent)=>{ if(e.key==='Enter'){ e.preventDefault(); submit(); } };
-  const useAdmin = ()=>{ if (ADMIN_EMAIL) setEmail(ADMIN_EMAIL); };
   return (
     <div className="mt-12 bg-white border border-neutral-200 rounded-3xl p-6 shadow-sm" onKeyDown={onKeyDown}>
       <div className="flex items-center justify-between mb-4">
@@ -287,31 +336,49 @@ function LoginCard({ onSignIn, onSignUp }:{ onSignIn:(p:{email:string,password:s
           <button className={classNames('px-3 py-1.5 rounded-xl', mode==='signup'? 'bg-neutral-900 text-white':'bg-neutral-100')} onClick={()=>setMode('signup')}>Create account</button>
         </div>
       </div>
-      <div className="grid gap-3">
-        <label className="text-sm">Email address
-          <input className="mt-1 w-full border border-neutral-300 rounded-xl px-3 py-2" value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@example.com"/>
-        </label>
-        <div className="text-xs text-neutral-500 -mt-1 flex items-center justify-between">
-          <span>Use your email and a password.</span>
-          <button type="button" className={classNames('underline', ADMIN_EMAIL? 'text-neutral-600 hover:text-neutral-800':'opacity-40 cursor-not-allowed')} onClick={useAdmin}>Use admin email</button>
-        </div>
-        <label className="text-sm">Password
-          <div className="mt-1 flex items-center gap-2">
-            <input className="flex-1 border border-neutral-300 rounded-xl px-3 py-2" type={showPwd? 'text':'password'} value={password} onChange={e=>setPassword(e.target.value)}/>
-            <button type="button" className="text-xs px-2 py-1 rounded-lg border border-neutral-300 hover:bg-neutral-50" onClick={()=>setShowPwd(s=>!s)}>{showPwd? 'Hide':'Show'}</button>
+      {mode==='signin' ? (
+        <div className="grid gap-3">
+          <label className="text-sm">Email or Username
+            <input className="mt-1 w-full border border-neutral-300 rounded-xl px-3 py-2" value={identifier} onChange={e=>setIdentifier(e.target.value)} placeholder="you@example.com or username"/>
+          </label>
+          <label className="text-sm">Password
+            <div className="mt-1 flex items-center gap-2">
+              <input className="flex-1 border border-neutral-300 rounded-xl px-3 py-2" type={showPwd? 'text':'password'} value={password} onChange={e=>setPassword(e.target.value)}/>
+              <button type="button" className="text-xs px-2 py-1 rounded-lg border border-neutral-300 hover:bg-neutral-50" onClick={()=>setShowPwd(s=>!s)}>{showPwd? 'Hide':'Show'}</button>
+            </div>
+          </label>
+          {err && <div className="text-xs text-red-600">{err}</div>}
+          <div className="flex items-center gap-2 mt-2">
+            <button onClick={submit} className="px-4 py-2 rounded-xl bg-neutral-900 text-white">Log in</button>
           </div>
-        </label>
-        {err && <div className="text-xs text-red-600">{err}</div>}
-        <div className="flex items-center gap-2 mt-2">
-          <button onClick={submit} className="px-4 py-2 rounded-xl bg-neutral-900 text-white">{mode==='signin'? 'Log in':'Create account'}</button>
         </div>
-      </div>
-      <p className="mt-4 text-xs text-neutral-500">Tip: if you set VITE_ADMIN_EMAIL in Vercel, click “Use admin email” to autofill.</p>
+      ):(
+        <div className="grid gap-3">
+          <label className="text-sm">Email address
+            <input className="mt-1 w-full border border-neutral-300 rounded-xl px-3 py-2" value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@example.com"/>
+          </label>
+          <label className="text-sm">Password
+            <div className="mt-1 flex items-center gap-2">
+              <input className="flex-1 border border-neutral-300 rounded-xl px-3 py-2" type={showPwd? 'text':'password'} value={password} onChange={e=>setPassword(e.target.value)}/>
+              <button type="button" className="text-xs px-2 py-1 rounded-lg border border-neutral-300 hover:bg-neutral-50" onClick={()=>setShowPwd(s=>!s)}>{showPwd? 'Hide':'Show'}</button>
+            </div>
+          </label>
+          <label className="text-sm">Username
+            <input className="mt-1 w-full border border-neutral-300 rounded-xl px-3 py-2" value={username} onChange={e=>setUsername(e.target.value)} placeholder="yourname"/>
+          </label>
+          <label className="text-sm">Bio
+            <textarea className="mt-1 w-full border border-neutral-300 rounded-xl px-3 py-2" rows={2} value={bio} onChange={e=>setBio(e.target.value)} placeholder="Tell something about yourself"/>
+          </label>
+          {err && <div className="text-xs text-red-600">{err}</div>}
+          <div className="flex items-center gap-2 mt-2">
+            <button onClick={submit} className="px-4 py-2 rounded-xl bg-neutral-900 text-white">Create account</button>
+          </div>
+        </div>
+      )}
+      <p className="mt-4 text-xs text-neutral-500">Sign in with your email or username. Usernames are unique.</p>
     </div>
   );
-}
-
-function NewPost({ onCreate }:{ onCreate:(files: File[], caption: string)=>void }){
+}function NewPost({ onCreate }:{ onCreate:(files: File[], caption: string)=>void }){
   const [files, setFiles] = useState<File[]>([]);
   const [caption, setCaption] = useState('');
   const onPick = (e: React.ChangeEvent<HTMLInputElement>)=>{ const list = e.target.files; if(!list) return; setFiles(Array.from(list)); };
@@ -365,7 +432,7 @@ function AdminPanel({ posts, onDeleteAll }:{ posts:Post[], onDeleteAll:(userId:s
 
 function HomeFeed({ posts, getUser, onAddComment, onReactPost, isAuthed, currentUserId, onEditPost, onDeletePost }:{
   posts: Post[];
-  getUser: (id:string)=>{id:string, username:string, bio:string};
+  getUser: (id:string)=>any;
   onAddComment: (postId:string, content:string)=>void;
   onReactPost: (postId:string, type:'up'|'down')=>void;
   isAuthed: boolean;
@@ -377,7 +444,7 @@ function HomeFeed({ posts, getUser, onAddComment, onReactPost, isAuthed, current
   return (
     <div className="grid gap-6 mt-2">
       {posts.map(p=> (
-        <PostCard key={p.id} post={p} author={getUser(p.userId)}
+        <PostCard key={p.id} post={p} getUser={getUser}
           isAuthed={isAuthed} currentUserId={currentUserId}
           onAddComment={onAddComment}
           onReactPost={onReactPost}
@@ -425,9 +492,9 @@ function CommentBlock({ c, user }:{ c: Comment, user:{ id:string, username:strin
   );
 }
 
-function PostCard({ post, author, isAuthed, currentUserId, onAddComment, onReactPost, onEditPost, onDeletePost }:{
+function PostCard({ post, getUser, isAuthed, currentUserId, onAddComment, onReactPost, onEditPost, onDeletePost }:{
   post: Post;
-  author: { id:string, username:string };
+  getUser: (id:string)=>any;
   isAuthed: boolean;
   currentUserId: string;
   onAddComment: (postId:string, content:string)=>void;
@@ -439,6 +506,8 @@ function PostCard({ post, author, isAuthed, currentUserId, onAddComment, onReact
   const [editing, setEditing] = useState(false);
   const [captionDraft, setCaptionDraft] = useState(post.caption || '');
   const [comment, setComment] = useState('');
+  const [author, setAuthor] = useState<any>(null);
+  useEffect(()=>{ let alive=true; Promise.resolve(getUser(post.userId)).then(u=>{ if(alive) setAuthor(u||{ id:post.userId, username:post.userId }); }); return ()=>{ alive=false; }; },[post.userId, getUser]);
 
   const media_urls = post.media_urls;
   const mediaTypes = post.mediaTypes;
@@ -601,5 +670,11 @@ function UserIcon(){return (<svg width="22" height="22" viewBox="0 0 24 24" fill
 function Footer() { return <footer className="text-center text-xs text-neutral-400 py-6">InstaFacts</footer>; }
 
 export default App;
+
+
+
+
+
+
 
 
