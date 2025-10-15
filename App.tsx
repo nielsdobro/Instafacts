@@ -12,7 +12,7 @@ function useToast(){ const [toast, setToast] = useState<string|null>(null); cons
 function Toast({ msg }:{ msg:string }){ return <div className="fixed top-3 left-1/2 -translate-x-1/2 bg-neutral-900 text-white px-4 py-2 rounded-xl shadow z-50">{msg}</div>; }
 
 // Bump this each time App.tsx changes (for cache-busting on Vercel)
-const APP_VERSION = 'v0.5';
+const APP_VERSION = 'v0.6';
 
 type Profile = { id: string; username: string; bio?: string; email?: string };
 
@@ -222,7 +222,7 @@ function createLocalLayer(): DataLayer{
   const data = useDataLayer();
   const [route, setRoute] = useState<string>(()=>parseHash());
   const [posts, setPosts] = useState<Post[]>([]);
-  const [loading, setLoading] = useState<boolean>(false);
+  const [loading, setLoading] = useState<boolean>(false);\n  const [displayName, setDisplayName] = useState<string | undefined>(undefined);
   const { toast, showToast } = useToast();
   useEffect(()=>{ const onHash=()=>setRoute(parseHash()); window.addEventListener('hashchange', onHash); return ()=>window.removeEventListener('hashchange', onHash); },[]);
   useEffect(()=>{ if(!data) return; if (data.mode==='local') data.seed?.(); refresh(); const unsub = data.subscribe? data.subscribe(()=>refresh()): undefined; return ()=>{ unsub && unsub(); }; },[data]);
@@ -231,20 +231,20 @@ function createLocalLayer(): DataLayer{
 
   async function refresh(){ if(!data) return; try { setLoading(true); const list = await data.listPosts(); setPosts(list); } catch(e:any){ showToast('Failed to load posts'); } finally { setLoading(false);} }
 
-  const doSignIn = async ({ identifier, password }:{ identifier:string, password:string })=>{ try { await data?.signIn({ identifier, password }); window.location.hash = '#/profile'; refresh(); } catch(e:any){ showToast(e.message||'Sign in failed'); } };
-  const doSignUp = async ({ email, password, username, bio }:{ email:string, password:string, username?:string, bio?:string })=>{ try { await data?.signUp({ email, password, username, bio }); window.location.hash = '#/profile'; refresh(); } catch(e:any){ showToast(e.message||'Sign up failed'); } };
-  const doSignOut = async ()=>{ try { await data?.signOut(); window.location.hash = '#/home'; refresh(); } catch(e:any){ showToast('Sign out failed'); } };
+  const niceAuthError = (e:any) => { const m = String(e?.message || e || '').toLowerCase(); if (m.includes('invalid login') || m.includes('invalid email') || m.includes('invalid credentials')) return 'Invalid email/username or password.'; if (m.includes('registered') || m.includes('already exists')) return 'Email already in use. Please sign in.'; if (m.includes('confirm')) return 'Check your email to confirm your account, then sign in.'; return e?.message || 'Authentication failed.'; };\n  const doSignIn = async ({ identifier, password }:{ identifier:string, password:string })=>{ try { await data?.signIn({ identifier, password }); window.location.hash = '#/profile'; refresh(); } catch(e:any){ showToast(niceAuthError(e)); } };
+  const doSignUp = async ({ email, password, username, bio }:{ email:string, password:string, username?:string, bio?:string })=>{ try { await data?.signUp({ email, password, username, bio }); window.location.hash = '#/profile'; refresh(); } catch(e:any){ showToast(niceAuthError(e)); } };
+  const doSignOut = async ()=>{\n    try {\n      await data?.signOut();\n    } catch {}\n    try {\n      for (const k in localStorage) {\n        if (typeof k === 'string' && k.startsWith('sb-') && k.endsWith('-auth-token')) {\n          try { localStorage.removeItem(k as any); } catch {}\n        }\n      }\n      sessionStorage.removeItem('instafacts_cache');\n    } catch {}\n    window.location.hash = '#/login';\n    window.location.reload();\n  };
 
   const onAddComment = async (postId:string, content:string)=>{ try { await data?.addComment({ postId, content }); refresh(); } catch(e:any){ showToast('Failed to add comment'); } };
   const onEditPost   = async (postId:string, caption:string)=>{ try { await data?.updatePost({ postId, caption }); refresh(); } catch(e:any){ showToast('Failed to update'); } };
   const onDeletePost = async (postId:string)=>{ try { await data?.deletePost({ postId }); refresh(); } catch(e:any){ showToast('Failed to delete'); } };
   const onReactPost  = async (postId:string, type:'up'|'down')=>{ try { await data?.toggleReactPost({ postId, type }); refresh(); } catch(e:any){ showToast('Failed to react'); } };
   const deleteAllByUser = async (userId:string)=>{ try { await data?.deleteAllPostsByUser?.(userId); refresh(); } catch(e:any){ showToast('Admin policy not configured'); } };
-  const onCreatePost = async (files: File[], caption: string)=>{ try { await data?.createPost({ files, caption }); window.location.hash = '#/home'; refresh(); showToast('Posted'); } catch(e:any){ showToast(e.message||'Failed to post'); } };
+  \n\n  // Derive display name (prefer username)\n  useEffect(()=>{ let cancelled=false; (async()=>{\n    const id = data?.currentUser?.id;\n    if (id && data?.getProfile){\n      try { const p = await data.getProfile(id); if(!cancelled) setDisplayName(p?.username || data.currentUser?.email || undefined); } catch { setDisplayName(data?.currentUser?.email); }\n    } else { setDisplayName(undefined); }\n  })(); return ()=>{ cancelled=true; }; }, [data?.currentUser?.id]); window.location.hash = '#/home'; refresh(); showToast('Posted'); } catch(e:any){ showToast(e.message||'Failed to post'); } };
 
   return (
     <div className="min-h-screen bg-neutral-50 text-neutral-900">
-      <TopBar currentUserEmail={data?.currentUser?.email} onSignOut={doSignOut} />
+      <TopBar currentUserLabel={(displayName || data?.currentUser?.email)} onSignOut={doSignOut} />
       <div className="max-w-5xl mx-auto px-4 pb-24">
         {toast && <Toast msg={toast} />}
         {route==='login' && !isAuthed && <div className="max-w-md mx-auto"><LoginCard onSignIn={doSignIn} onSignUp={doSignUp} /></div>}
@@ -285,7 +285,7 @@ function createLocalLayer(): DataLayer{
 
 function parseHash(){ const raw=window.location.hash.replace(/^#\/?/,''); if(!raw) return 'home'; if(['home','login','new','profile'].includes(raw)) return raw; return 'home'; }
 
-function TopBar({ currentUserEmail, onSignOut }:{ currentUserEmail?: string, onSignOut: ()=>void }){
+function TopBar({ currentUserLabel, onSignOut }:{ currentUserLabel?: string, onSignOut: ()=>void }){
   return (
     <header className="sticky top-0 z-30 bg-white/80 backdrop-blur border-b border-neutral-200">
       <div className="max-w-5xl mx-auto px-4 py-2.5 flex items-center justify-between">
@@ -297,9 +297,9 @@ function TopBar({ currentUserEmail, onSignOut }:{ currentUserEmail?: string, onS
           <a href="#/home" aria-label="Home" className="p-1.5 rounded-xl hover:bg-neutral-100"><HomeIcon/></a>
           <a href="#/new" aria-label="New" className="p-1.5 rounded-xl hover:bg-neutral-100"><AddIcon/></a>
           <a href="#/profile" aria-label="Profile" className="p-1.5 rounded-xl hover:bg-neutral-100"><UserIcon/></a>
-          {currentUserEmail ? (
+          {currentUserLabel ? (
             <>
-              <span className="px-2 text-neutral-600 hidden sm:block">{currentUserEmail}</span>
+              <span className="px-2 text-neutral-600 hidden sm:block">{currentUserLabel}</span>
               <button onClick={onSignOut} className="px-3 py-1.5 rounded-xl bg-neutral-900 text-white hover:opacity-90">Log out</button>
             </>
           ) : (
@@ -724,6 +724,12 @@ function ProfileEditor({ loadProfile, onSave }:{ loadProfile: ()=>Promise<Profil
 function Footer() { return <footer className="text-center text-xs text-neutral-400 py-6">InstaFacts</footer>; }
 
 export default App;
+
+
+
+
+
+
 
 
 
