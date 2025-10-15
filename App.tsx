@@ -751,6 +751,64 @@ const [slide, setSlide] = useState(0);
           <button onClick={submitComment} disabled={!isAuthed||!comment.trim()} className={classNames('px-3 py-2 rounded-xl text-sm', (!isAuthed||!comment.trim())? 'bg-neutral-200 text-neutral-500':'bg-neutral-900 text-white')}>Post</button>
         </div>
       </div>
+
+      {post.comments && post.comments.length > 0 && (
+  <div className="mt-4">
+    <h4 className="text-sm font-semibold mb-2">Comments</h4>
+    <div className="space-y-3">
+      {post.comments.map((c, idx) => (
+        <div key={c.id || idx} className="flex items-start gap-2 bg-neutral-100 rounded-xl p-3">
+          <div className="w-8 h-8 rounded-full bg-gradient-to-br from-pink-500 to-purple-600 text-white flex items-center justify-center text-xs font-bold">
+            {(typeof getUser === "function" ? getUser(c.userId)?.username : c.userId)?.[0]?.toUpperCase() || "?"}
+          </div>
+          <div className="flex-1">
+            <div className="flex items-center gap-2">
+              <span className="font-medium text-sm">{typeof getUser === "function" ? getUser(c.userId)?.username : c.userId}</span>
+              {c.edited && <span className="text-xs text-neutral-400">(edited)</span>}
+              <span className="text-xs text-neutral-400 ml-auto">{c.createdAt ? new Date(c.createdAt).toLocaleString() : ""}</span>
+            </div>
+            <div className="text-sm mt-1 whitespace-pre-wrap break-words">{c.content}</div>
+            <div className="flex gap-2 mt-2">
+              <button
+                className={`px-2 py-1 rounded text-xs ${c.likesUp?.includes(props.currentUserId ?? "") ? "bg-green-100 text-green-700" : "bg-neutral-200"}`}
+                disabled={!props.isAuthed}
+                onClick={() => props.onReactComment ? props.onReactComment(post.id, c.id, undefined, "up") : undefined}
+              >
+                👍 {c.likesUp?.length || 0}
+              </button>
+              <button
+                className={`px-2 py-1 rounded text-xs ${c.likesDown?.includes(props.currentUserId ?? "") ? "bg-red-100 text-red-700" : "bg-neutral-200"}`}
+                disabled={!props.isAuthed}
+                onClick={() => props.onReactComment ? props.onReactComment(post.id, c.id, undefined, "down") : undefined}
+              >
+                👎 {c.likesDown?.length || 0}
+              </button>
+              {(props.currentUserId ?? "") === c.userId && (
+                <>
+                  <button
+                    className="px-2 py-1 rounded text-xs bg-neutral-200"
+                    disabled={!props.onEditComment}
+                    onClick={() => props.onEditComment ? props.onEditComment(post.id, c.id, undefined, c.content) : undefined}
+                  >
+                    Edit
+                  </button>
+                  <button
+                    className="px-2 py-1 rounded text-xs bg-neutral-200 text-red-600"
+                    disabled={!props.onDeleteComment}
+                    onClick={() => props.onDeleteComment ? props.onDeleteComment(post.id, c.id, undefined) : undefined}
+                  >
+                    Delete
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  </div>
+)}
+
     </article>
   );
 }
@@ -895,26 +953,62 @@ function Post({
           </button>
         </div>
       </div>
+
+      {post.comments && post.comments.length > 0 && (
+  <div className="mt-4">
+    <h4 className="text-sm font-semibold mb-2">Comments</h4>
+    <div className="space-y-3">
+      {post.comments.map((c, idx) => (
+        <div key={c.id || idx} className="flex items-start gap-2 bg-neutral-100 rounded-xl p-3">
+          <div className="w-8 h-8 rounded-full bg-gradient-to-br from-pink-500 to-purple-600 text-white flex items-center justify-center text-xs font-bold">
+            {(getUser ? getUser(c.userId)?.username : c.userId)?.[0]?.toUpperCase() || "?"}
+          </div>
+          <div className="flex-1">
+            <div className="flex items-center gap-2">
+              <span className="font-medium text-sm">{getUser ? getUser(c.userId)?.username : c.userId}</span>
+              {c.edited && <span className="text-xs text-neutral-400">(edited)</span>}
+              <span className="text-xs text-neutral-400 ml-auto">{c.createdAt ? new Date(c.createdAt).toLocaleString() : ""}</span>
+            </div>
+            <div className="text-sm mt-1 whitespace-pre-wrap break-words">{c.content}</div>
+            {/* Like/Dislike buttons (optional) */}
+            <div className="flex gap-2 mt-2">
+              <button
+                className={`px-2 py-1 rounded text-xs ${c.likesUp?.includes(currentUserId) ? "bg-green-100 text-green-700" : "bg-neutral-200"}`}
+                disabled={!isAuthed}
+                onClick={() => onReactComment && onReactComment(post.id, c.id, undefined, "up")}
+              >
+                👍 {c.likesUp?.length || 0}
+              </button>
+              <button
+                className={`px-2 py-1 rounded text-xs ${c.likesDown?.includes(currentUserId) ? "bg-red-100 text-red-700" : "bg-neutral-200"}`}
+                disabled={!isAuthed}
+                onClick={() => onReactComment && onReactComment(post.id, c.id, undefined, "down")}
+              >
+                👎 {c.likesDown?.length || 0}
+              </button>
+              {/* Edit/Delete for owner */}
+              {currentUserId === c.userId && (
+                <>
+                  <button className="px-2 py-1 rounded text-xs bg-neutral-200" onClick={() => onEditComment && onEditComment(post.id, c.id, undefined, c.content)}>
+                    Edit
+                  </button>
+                  <button className="px-2 py-1 rounded text-xs bg-neutral-200 text-red-600" onClick={() => onDeleteComment && onDeleteComment(post.id, c.id, undefined)}>
+                    Delete
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  </div>
+)}
+
     </article>
   );
 }
-function onAddComment(id: any, comment: any) {
-  throw new Error("Function not implemented.");
-}
 
-function setComment(arg0: string) {
-  throw new Error("Function not implemented.");
-}
-
-function onEditPost(id: any, captionDraft: any) {
-  throw new Error("Function not implemented.");
-}
-
-function setEditing(arg0: boolean) {
-  throw new Error("Function not implemented.");
-}
-
-// Add this inside App.tsx if a component is missing
 function Spinner() { return <div>Loading...</div>; }
 function NewPost(props) { return <div>New Post Component</div>; }
 function Profile(props) { return <div>Profile Component</div>; }
