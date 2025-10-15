@@ -1,510 +1,143 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import { createClient } from "@supabase/supabase-js";
-import CommentBlock from './CommentBlock'; // Adjust the path as needed
+import React, { useEffect, useRef, useState } from "react";
 
-// InstaFacts – Cloud-ready version (Supabase + Zapier) with local fallback
-// ----------------------------------------------------------------------
-// What’s new:
-// - Data layer abstraction with **Supabase mode** (auth, storage, realtime) and
-//   **Local mode** fallback (localStorage) so it runs in this canvas immediately.
-// - Public read (no login), login/signup for posting/commenting.
-// - New Post: vertical layout + square cropper (drag/zoom, press Enter to publish in caption).
-// - Like/Dislike on posts/comments (green/red), overlay on media bottom-right.
-// - Edit/Delete own posts & comments/replies. Edited shows “(edited)”.
-// - Login/Signup: Enter submits.
-// - Zapier-ready DB schema expectation (see README note at bottom of this file).
-//
-// To use Supabase in production:
-//   1) Install: `npm i @supabase/supabase-js`
-//   2) Add env vars (Vite-style): VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY
-//   3) Deploy to Vercel/Netlify with these env vars set.
-// The app will auto-detect Supabase; otherwise uses Local mode for this preview.
-
-// ===== Utilities =====
-const LS_KEYS = {
-  users: "instafacts_users",
-  currentUserId: "instafacts_current_user_id",
-  posts: "instafacts_posts",
+type Comment = {
+  id: string;
+  userId: string;
+  content: string;
+  createdAt: number;
+  replies: Comment[];
+  likesUp: string[];
+  likesDown: string[];
+  edited?: boolean;
 };
 
-function uid(prefix = "id") {
-  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-}
+type Post = {
+  id: string;
+  userId: string;
+  caption: string;
+  createdAt: number;
+  media_urls: string[];
+  mediaTypes: ("image"|"video")[];
+  comments: Comment[];
+  likesUp: string[];
+  likesDown: string[];
+  edited?: boolean;
+};
 
-function saveLS(key, value) { localStorage.setItem(key, JSON.stringify(value)); }
-function loadLS(key, fallback) { try { const raw = localStorage.getItem(key); return raw ? JSON.parse(raw) : fallback; } catch { return fallback; } }
-
-function timeAgo(ts) {
-  const s = Math.floor((Date.now() - ts) / 1000);
-  if (s < 60) return `${s}s`; const m = Math.floor(s/60); if (m < 60) return `${m}m`;
-  const h = Math.floor(m/60); if (h < 24) return `${h}h`; const d = Math.floor(h/24); if (d < 7) return `${d}d`;
+const classNames = (...a: (string|false|undefined)[]) => a.filter(Boolean).join(" ");
+const uid = (p="id") => `${p}_${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
+const timeAgo = (ts:number) => {
+  const s = Math.floor((Date.now()-ts)/1000);
+  if (s<60) return `${s}s`; const m=Math.floor(s/60); if (m<60) return `${m}m`;
+  const h=Math.floor(m/60); if (h<24) return `${h}h`; const d=Math.floor(h/24); if (d<7) return `${d}d`;
   return new Date(ts).toLocaleDateString();
-}
-const classNames = (...a) => a.filter(Boolean).join(" ");
-function readFileAsDataURL(file){return new Promise((res,rej)=>{const fr=new FileReader();fr.onload=()=>res(fr.result);fr.onerror=rej;fr.readAsDataURL(file);});}
-async function dataURLToImage(dataURL){return new Promise((res,rej)=>{const img=new Image();img.onload=()=>res(img);img.onerror=rej;img.src=dataURL;});}
-const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+};
 
-// ===== Minimal Data Layer Interface =====
-// Methods: currentUser, signIn, signUp, signOut
-//          listPosts, createPost, updatePost, deletePost
-//          addComment, addReply, editComment, deleteComment
-//          toggleReactPost, toggleReactComment
-//          subscribe(cb) -> unsubscribe (Supabase only)
-
-
-
-function demoSVG(text){return "data:image/svg+xml;utf8,"+encodeURIComponent(`<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 600 600'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0%' stop-color='#f58529'/><stop offset='50%' stop-color='#dd2a7b'/><stop offset='100%' stop-color='#8134af'/></linearGradient></defs><rect width='600' height='600' rx='40' fill='url(#g)'/><text x='50%' y='50%' text-anchor='middle' fill='white' font-size='48' font-family='Arial' dy='.3em'>${text}</text></svg>`);} 
-function demoSquare(){return "data:image/svg+xml;utf8,"+encodeURIComponent(`<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 600 600'><rect width='600' height='600' fill='#222'/><circle cx='300' cy='300' r='200' fill='#999'/><text x='50%' y='50%' text-anchor='middle' fill='white' font-size='42' font-family='Arial' dy='.3em'>Square Media</text></svg>`);} 
-
-function useDataLayer() {
-  const [layer, setLayer] = useState<any>(null);
-  const [initError, setInitError] = useState<string | null>(null);
-
-  useEffect(() => {
-    (async () => {
-      try {
-        const url = import.meta.env.VITE_SUPABASE_URL as string | undefined;
-        const key = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
-        if (!url || !key) throw new Error("Missing Supabase env vars");
-        const sb = createClient(url, key);
-        const supa = await createSupabaseDataLayer(sb);
-        setLayer(supa);
-      } catch (e: any) {
-        console.error("[InstaFacts] Supabase init failed:", e);
-        setInitError("Supabase configuration error. Please set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.");
-      }
-    })();
-  }, []);
-
-  if (initError) {
-    return null;
-  }
-  return layer;
-}
-
-async function createSupabaseDataLayer(supabase: any) {
-  const [currentUser, setCurrentUser] = (() => {
-    let user: any = null;
-    let setUser: (u: any) => void = () => {};
-    const listeners: ((u: any) => void)[] = [];
-    setUser = (u) => {
-      user = u;
-      listeners.forEach((cb) => cb(u));
-    };
-    return [user, setUser];
-  })();
-
-  // Use React state for currentUser
-  let userState: any = null;
-  const getUser = async () => {
-    const { data } = await supabase.auth.getUser();
-    userState = data?.user || null;
-    setCurrentUser(userState);
+function useToast(){
+  const [toast, setToast] = useState<string|null>(null);
+  const t = useRef<number|undefined>(undefined);
+  const showToast = (msg:string, ms=2000)=>{
+    setToast(msg);
+    if (t.current) window.clearTimeout(t.current);
+    t.current = window.setTimeout(()=>setToast(null), ms);
   };
-  await getUser();
-  supabase.auth.onAuthStateChange((_event: any, session: any) => {
-    userState = session?.user || null;
-    setCurrentUser(userState);
-  });
-
-  const mediaBucket = "media";
-
-  return {
-    mode: "supabase",
-    get currentUser() { return userState; },
-    async signUp({ username, password, bio }){
-      const email = `${username.trim()}+instafacts@example.com`; // demo email format (no deliverability required)
-      const { data, error } = await supabase.auth.signUp({ email, password });
-      if (error) throw error;
-      // store profile via a comment in bio? (optional separate table). For simplicity we keep username in user_metadata
-      await supabase.auth.updateUser({ data: { username, bio } });
-      return data.user;
-    },
-    async signIn({ username, password }){
-      const email = `${username.trim()}+instafacts@example.com`;
-      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-      if (error) throw error;
-      currentUser = data.user; return data.user;
-    },
-    async signOut(){ await supabase.auth.signOut(); currentUser=null; },
-    async updateAccount({ username, bio }){
-      const { error } = await supabase.auth.updateUser({ data: { username, bio } });
-      if (error) throw error;
-    },
-    // Posts
-
-async listPosts(){
-  // 1) posts (newest first)
-  const { data: postRows, error: postErr } = await supabase
-    .from('posts')
-    .select('*')
-    .order('created_at', { ascending:false })
-    .limit(50);
-  if (postErr) throw postErr;
-  if (!postRows?.length) return [];
-
-  const postIds = postRows.map(p => p.id);
-
-  // 2) comments for these posts
-  const { data: commentRows, error: cErr } = await supabase
-    .from('comments')
-    .select('*')
-    .in('post_id', postIds)
-    .order('created_at', { ascending:true });
-  if (cErr) throw cErr;
-
-  // 3) replies for these comments
-  const commentIds = (commentRows || []).map(c => c.id);
-  const { data: replyRows, error: rErr } = commentIds.length
-    ? await supabase
-        .from('replies')
-        .select('*')
-        .in('comment_id', commentIds)
-        .order('created_at', { ascending:true })
-    : { data: [], error: null };
-  if (rErr) throw rErr;
-
-  // 4) shape replies per comment
-  const repliesByComment = new Map<string, any[]>();
-  for (const r of replyRows || []) {
-    const arr = repliesByComment.get(r.comment_id) || [];
-    arr.push({
-      id: r.id,
-      userId: r.user_id,
-      content: r.content,
-      createdAt: new Date(r.created_at).getTime(),
-      replies: [],
-      likesUp: r.likes_up || [],
-      likesDown: r.likes_down || [],
-      edited: !!r.edited,
-    });
-    repliesByComment.set(r.comment_id, arr);
-  }
-
-  // 5) shape comments per post
-  const commentsByPost = new Map<string, any[]>();
-  for (const c of commentRows || []) {
-    const arr = commentsByPost.get(c.post_id) || [];
-    arr.push({
-      id: c.id,
-      userId: c.user_id,
-      content: c.content,
-      createdAt: new Date(c.created_at).getTime(),
-      replies: repliesByComment.get(c.id) || [],
-      likesUp: c.likes_up || [],
-      likesDown: c.likes_down || [],
-      edited: !!c.edited,
-    });
-    commentsByPost.set(c.post_id, arr);
-  }
-
-  // 6) final map to UI shape
-  return postRows.map(row => ({
-    id: row.id,
-    userId: row.user_id,
-    mediaType: row.media_type,
-    media_url: row.media_url,
-    caption: row.caption,
-    createdAt: new Date(row.created_at).getTime(),
-    comments: commentsByPost.get(row.id) || [],
-    likesUp: row.likes_up || [],
-    likesDown: row.likes_down || [],
-    edited: !!row.edited,
-  }));
-},
-    async createPost({ files, caption, croppedDataURLs }){
-      if (!currentUser) throw new Error("Login required");
-      let media_urls = [];
-      let media_types = [];
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        let media_url = "";
-        let media_type = file.type.startsWith("video") ? "video" : "image";
-        if (file) {
-          const ext = file.name.split('.').pop() || (media_type==='video'? 'mp4':'jpg');
-          const path = `${currentUser.id}/${Date.now()}_${i}.${ext}`;
-          const { error: upErr } = await supabase.storage.from(mediaBucket).upload(path, file, { upsert:false });
-          if (upErr) throw upErr;
-          const { data: pub } = supabase.storage.from(mediaBucket).getPublicUrl(path);
-          media_url = pub.publicUrl;
-        } else if (croppedDataURLs && croppedDataURLs[i]) {
-          media_url = croppedDataURLs[i];
-        }
-        media_urls.push(media_url);
-        media_types.push(media_type);
-      }
-      const { error } = await supabase.from('posts').insert({
-        user_id: currentUser.id,
-        media_types,
-        media_urls,
-        caption: caption.trim()
-      });
-      if (error) throw error;
-    },
-    async updatePost({ postId, caption }){
-      if (!currentUser) return;
-      const { error } = await supabase.from('posts').update({ caption: caption.trim(), edited: true }).eq('id', postId).eq('user_id', currentUser.id);
-      if (error) throw error;
-    },
-    async deletePost({ postId }){
-      if (!currentUser) return;
-      const { error } = await supabase.from('posts').delete().eq('id', postId).eq('user_id', currentUser.id);
-      if (error) throw error;
-    },
-    // Comments
-    async addComment({ postId, content }){
-      if (!currentUser) throw new Error("Login required");
-      const { error } = await supabase.from('comments').insert({ post_id: postId, user_id: currentUser.id, content: content.trim() });
-      if (error) throw error;
-    },
-    async addReply({ postId, commentId, content }){
-      if (!currentUser) throw new Error("Login required");
-      const { error } = await supabase.from('replies').insert({ comment_id: commentId, user_id: currentUser.id, content: content.trim() });
-      if (error) throw error;
-    },
-    async editComment({ postId, commentId, replyId, content }){
-      if (!currentUser) return;
-      if (!replyId){
-        const { error } = await supabase.from('comments').update({ content: content.trim(), edited:true }).eq('id', commentId).eq('user_id', currentUser.id);
-        if (error) throw error;
-      } else {
-        const { error } = await supabase.from('replies').update({ content: content.trim(), edited:true }).eq('id', replyId).eq('user_id', currentUser.id);
-        if (error) throw error;
-      }
-    },
-    async deleteComment({ postId, commentId, replyId }){
-      if (!currentUser) return;
-      if (!replyId){
-        const { error } = await supabase.from('comments').delete().eq('id', commentId).eq('user_id', currentUser.id);
-        if (error) throw error;
-      } else {
-        const { error } = await supabase.from('replies').delete().eq('id', replyId).eq('user_id', currentUser.id);
-        if (error) throw error;
-      }
-    },
-    async toggleReactPost({ postId, type }){
-      if (!currentUser) return;
-      // Use Postgres array toggling via RPC or simple fetch-read-update
-      const { data: rows, error } = await supabase.from('posts').select('likes_up, likes_down').eq('id', postId).single();
-      if (error) throw error;
-      let up = new Set(rows.likes_up||[]); let down = new Set(rows.likes_down||[]);
-      if (type==='up'){ up.has(currentUser.id)?up.delete(currentUser.id):(up.add(currentUser.id),down.delete(currentUser.id)); }
-      else { down.has(currentUser.id)?down.delete(currentUser.id):(down.add(currentUser.id),up.delete(currentUser.id)); }
-      const { error: upErr } = await supabase.from('posts').update({ likes_up:[...up], likes_down:[...down] }).eq('id', postId);
-      if (upErr) throw upErr;
-    },
-    async toggleReactComment({ postId, commentId, replyId, type }){
-      if (!currentUser) return;
-      if (!replyId){
-        const { data: row, error } = await supabase.from('comments').select('likes_up, likes_down').eq('id', commentId).single();
-        if (error) throw error;
-        let up=new Set(row.likes_up||[]), down=new Set(row.likes_down||[]);
-        if (type==='up'){ up.has(currentUser.id)?up.delete(currentUser.id):(up.add(currentUser.id),down.delete(currentUser.id)); }
-        else { down.has(currentUser.id)?down.delete(currentUser.id):(down.add(currentUser.id),up.delete(currentUser.id)); }
-        const { error: e2 } = await supabase.from('comments').update({ likes_up:[...up], likes_down:[...down] }).eq('id', commentId);
-        if (e2) throw e2;
-      } else {
-        const { data: row, error } = await supabase.from('replies').select('likes_up, likes_down').eq('id', replyId).single();
-        if (error) throw error;
-        let up=new Set(row.likes_up||[]), down=new Set(row.likes_down||[]);
-        if (type==='up'){ up.has(currentUser.id)?up.delete(currentUser.id):(up.add(currentUser.id),down.delete(currentUser.id)); }
-        else { down.has(currentUser.id)?down.delete(currentUser.id):(down.add(currentUser.id),up.delete(currentUser.id)); }
-        const { error: e2 } = await supabase.from('replies').update({ likes_up:[...up], likes_down:[...down] }).eq('id', replyId);
-        if (e2) throw e2;
-      }
-    },
-    // Realtime across posts/comments/replies
-    subscribe(onChange){
-      const chan = supabase.channel('realtime:instafacts');
-      chan.on('postgres_changes', { event:'*', schema:'public', table:'posts' }, onChange)
-          .on('postgres_changes', { event:'*', schema:'public', table:'comments' }, onChange)
-          .on('postgres_changes', { event:'*', schema:'public', table:'replies' }, onChange)
-          .subscribe();
-      return () => { supabase.removeChannel(chan); };
-    },
-    // No seed in cloud
-    seed(){}
-  };
+  useEffect(()=>()=>{ if (t.current) window.clearTimeout(t.current); },[]);
+  return { toast, showToast };
 }
 
-// ===== App =====
+function Toast({ msg }:{ msg:string }){
+  return <div className="fixed top-3 left-1/2 -translate-x-1/2 bg-neutral-900 text-white px-4 py-2 rounded-xl shadow z-50">{msg}</div>;
+}
+
 function App(){
-  const data = useDataLayer();
-  const [routeState, setRoute] = useState(()=>parseHash());
-  const [posts, setPosts] = useState([]);
-  const [loadingPosts, setLoadingPosts] = useState(false);
+  const [route, setRoute] = useState<string>(()=>parseHash());
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  const [posts, setPosts] = useState<Post[]>([]);
   const { toast, showToast } = useToast();
 
-  const refresh = async () => {
-    if (!data) return;
-    setLoadingPosts(true);
-    try {
-      const list = await data.listPosts();
-      setPosts(list);
-    } catch (e) {
-      showToast("Failed to load posts.");
-    }
-    setLoadingPosts(false);
+  useEffect(()=>{
+    const onHash = () => setRoute(parseHash());
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  },[]);
+
+  const isAuthed = !!currentUserId;
+
+  const doSignIn = async ({ username }: { username:string }) => {
+    setCurrentUserId(username || "user1");
+    window.location.hash = '#/home';
+  };
+  const doSignUp = async ({ username }: { username:string }) => doSignIn({ username });
+  const doSignOut = async () => { setCurrentUserId(null); window.location.hash = '#/home'; };
+
+  const getUser = (id:string) => ({ id, username: id, bio: '' });
+
+  const onAddComment = (postId:string, content:string) => {
+    if (!isAuthed) return showToast('Please log in');
+    setPosts(ps => ps.map(p => p.id===postId ? ({
+      ...p,
+      comments: [...p.comments, { id: uid('c'), userId: currentUserId!, content, createdAt: Date.now(), replies: [], likesUp: [], likesDown: [] }]
+    }) : p));
   };
 
-  useEffect(()=>{ if (!data) return; if (data.mode==='local') data.seed(); refresh(); const unsub = data.subscribe? data.subscribe(()=>refresh()) : ()=>{}; return unsub; },[data]);
-  const currentUser = data?.currentUser || null; const isAuthed = !!currentUser;
+  const onReactPost = (postId:string, type:'up'|'down') => {
+    if (!isAuthed) return showToast('Please log in');
+    setPosts(ps => ps.map(p => {
+      if (p.id!==postId) return p;
+      const up = new Set(p.likesUp), down = new Set(p.likesDown);
+      if (type==='up'){ up.has(currentUserId!)? up.delete(currentUserId!):(up.add(currentUserId!), down.delete(currentUserId!)); }
+      else { down.has(currentUserId!)? down.delete(currentUserId!):(down.add(currentUserId!), up.delete(currentUserId!)); }
+      return { ...p, likesUp:[...up], likesDown:[...down] };
+    }));
+  };
 
-  // Top-level actions wire to data layer
-  const doSignIn = async (p)=>{ try { await data.signIn(p); location.hash = '#/home'; setTimeout(refresh,10); } catch(e) { showToast(e.message || "Sign in failed."); } };
-  const doSignUp = async (p)=>{ try { await data.signUp(p); location.hash = '#/home'; setTimeout(refresh,10); } catch(e) { showToast(e.message || "Sign up failed."); } };
-  const doSignOut = async ()=>{
-    try {
-      await data.signOut();
-      if (window.location.hash !== '#/home') {
-        window.location.hash = '#/home';
-      } else {
-        window.dispatchEvent(new HashChangeEvent('hashchange'));
-      }
-      setTimeout(refresh, 0);
-    } catch(e) {
-      showToast("Sign out failed.");
-    }
+  const onEditPost = (postId:string, caption:string) => {
+    setPosts(ps => ps.map(p => p.id===postId ? ({ ...p, caption, edited: true }) : p));
   };
-  const doUpdateAccount = async (p) => { await data.updateAccount(p); };
-  const doCreate = async (p) => {
-    try {
-      await data.createPost(p);
-    } catch (e) {
-      showToast("Failed to create post.");
-    }
-  };
-  const doUpdatePost = async (id, caption) => { await data.updatePost({ postId: id, caption }); await refresh(); };
-  const doDeletePost = async (id)=>{ try { await data.deletePost({ postId:id }); await refresh(); } catch(e) { showToast("Failed to delete post."); } };
-  const doAddComment = async (postId, content) => {
-    if (!data || !currentUser) return;
-    setPosts(posts =>
-      posts.map(post =>
-        post.id === postId
-          ? {
-              ...post,
-              comments: [
-                ...post.comments,
-                {
-                  id: uid("c"),
-                  userId: currentUser.id,
-                  content,
-                  createdAt: Date.now(),
-                  replies: [],
-                  likesUp: [],
-                  likesDown: [],
-                  edited: false,
-                  optimistic: true,
-                },
-              ],
-            }
-            : post
-      )
-    );
-    try {
-      await data.addComment({ postId, content });
-      await refresh();
-    } catch (e) {
-      showToast("Failed to add comment.");
-    }
-  };
-  const doAddReply = async (postId, commentId, content)=>{ try { await data.addReply({ postId, commentId, content }); await refresh(); } catch(e) { showToast("Failed to add reply."); } };
-  const doEditComment = async (postId, commentId, replyId, content)=>{ try { await data.editComment({ postId, commentId, replyId, content }); await refresh(); } catch(e) { showToast("Failed to edit comment."); } };
-  const doDeleteComment = async (postId, commentId, replyId)=>{ try { await data.deleteComment({ postId, commentId, replyId }); await refresh(); } catch(e) { showToast("Failed to delete comment."); } };
-  const doReactPost = async (postId, type)=>{ try { await data.toggleReactPost({ postId, type }); await refresh(); } catch(e) { showToast("Failed to react to post."); } };
-  const doReactComment = async (postId, commentId, replyId, type)=>{ try { await data.toggleReactComment({ postId, commentId, replyId, type }); await refresh(); } catch(e) { showToast("Failed to react to comment."); } };
-
-  const { route, params } = routeState;
-  useEffect(()=>{ const gated=["new","profile","settings"]; const raw=window.location.hash.replace(/^#\/?/,""); if (!isAuthed && gated.includes(raw)) window.location.hash = "#/login"; },[isAuthed,route]);
+  const onDeletePost = (postId:string) => setPosts(ps => ps.filter(p => p.id!==postId));
 
   return (
     <div className="min-h-screen bg-neutral-50 text-neutral-900">
-      <TopBar currentUser={currentUser} onSignOut={doSignOut} />
+      <TopBar currentUserId={currentUserId} onSignOut={doSignOut} />
       <div className="max-w-2xl mx-auto px-4 pb-24">
-        {toast && <toast msg={toast} />}
-        {!data && <p className="mt-8 text-center text-neutral-500">Loading…</p>}
-        {loadingPosts && <div className="mt-8 text-center"><Spinner /></div>}
-        {data && route==='login' && !isAuthed && <LoginCard onSignIn={doSignIn} onSignUp={doSignUp} onSeed={()=>{ if(data.mode==='local') data.seed(); refresh(); }} />}
-        {data && route==='home' && (
-          <HomeFeed posts={posts}
-            getUser={(id: any)=>resolveUsername(data, id)}
-            onAddComment={doAddComment}
-            onAddReply={doAddReply}
-            onReactPost={doReactPost}
-            onReactComment={doReactComment}
+        {toast && <Toast msg={toast} />}
+        {route === 'login' && !isAuthed && (
+          <LoginCard onSignIn={doSignIn} onSignUp={doSignUp} />
+        )}
+        {route === 'home' && (
+          <HomeFeed
+            posts={posts}
+            getUser={getUser}
+            onAddComment={onAddComment}
+            onReactPost={onReactPost}
             isAuthed={isAuthed}
-            currentUserId={currentUser?.id}
-            onEditPost={doUpdatePost}
-            onDeletePost={doDeletePost}
-            onEditComment={doEditComment}
-            onDeleteComment={doDeleteComment}
-          />)}
-        {data && route==='new' && <NewPost onCreate={doCreate} isAuthed={isAuthed} />}
-        {data && route==='profile' && isAuthed && <Profile user={profileFromUser(currentUser)} posts={posts.filter((p: { userId: any; })=>p.userId===currentUser.id)} />}
-        {data && route.startsWith('user:') && (
-          <UserPublic
-            user={mockUserFromId(params.userId)}
-            posts={posts.filter((p: { userId: any; })=>p.userId===params.userId)}
-            getUser={(id: any)=>resolveUsername(data, id)}      
-            onReactPost={doReactPost}
-            onReactComment={doReactComment}
-            isAuthed={isAuthed}
-            onAddComment={doAddComment}
-            onAddReply={doAddReply}
-            currentUserId={currentUser?.id}
-            onEditPost={doUpdatePost}
-            onDeletePost={doDeletePost}
-            onEditComment={doEditComment}
-            onDeleteComment={doDeleteComment}
-          />)}
-        {data && route==='settings' && isAuthed && <AccountSettings user={profileFromUser(currentUser)} onSave={doUpdateAccount} />}
+            currentUserId={currentUserId || ''}
+            onEditPost={onEditPost}
+            onDeletePost={onDeletePost}
+          />
+        )}
       </div>
-      <Footer note={data? (data.mode==='supabase'? 'Cloud mode (Supabase)': 'Local mode (demo)'): ''} />
+      <Footer />
     </div>
   );
 }
 
-function parseHash(){ const raw=window.location.hash.replace(/^#\/?/,""); if(!raw) return {route:'home',params:{}}; if(raw.startsWith('user/')) return {route:`user:${raw.slice(5)}`,params:{userId:raw.slice(5)}}; if(['home','new','profile','login','settings'].includes(raw)) return {route:raw,params:{}}; return {route:'home',params:{}}; }
-
-// Map DB row → UI post
-function mapPostFromDB(row){
-  return {
-    id: row.id,
-    userId: row.user_id,
-    mediaTypes: row.media_types || [row.media_type],
-    media_urls: row.media_urls || [row.media_url],
-    caption: row.caption,
-    createdAt: new Date(row.created_at).getTime(),
-    comments: [],
-    likesUp: row.likes_up || [],
-    likesDown: row.likes_down || [],
-    edited: !!row.edited,
-  };
-}
-function profileFromUser(u){ return { id:u?.id, username:u?.user_metadata?.username || (u?.email?.split('+')[0]||'user'), bio:u?.user_metadata?.bio||'' }; }
-function mockUserFromId(id){ return { id, username:`user_${String(id).slice(0,6)}`, bio:'' }; }
-function resolveUsername(data, id){
-  const cu = data?.currentUser; if (cu && cu.id===id) return profileFromUser(cu);
-  // For demo, best-effort fallback name; in Supabase you would query a profiles table.
-  return mockUserFromId(id);
+function parseHash(){
+  const raw = window.location.hash.replace(/^#\/?/, '');
+  if (!raw) return 'home';
+  if ([ 'home','login' ].includes(raw)) return raw;
+  return 'home';
 }
 
-// ===== UI =====
-function TopBar({ currentUser, onSignOut }){
+function TopBar({ currentUserId, onSignOut }:{ currentUserId: string|null, onSignOut: ()=>void }){
   return (
     <header className="sticky top-0 z-20 bg-white/80 backdrop-blur border-b border-neutral-200">
       <div className="max-w-2xl mx-auto px-4 py-3 flex items-center justify-between">
         <a href="#/home" className="hover:opacity-90"><Logo size={26} /></a>
         <div className="flex items-center gap-2 text-sm">
           <a href="#/home" className="px-3 py-1.5 rounded-xl hover:bg-neutral-100">Home</a>
-          <a href="#/new" className="px-3 py-1.5 rounded-xl hover:bg-neutral-100">New Post</a>
-          {currentUser && <a href="#/profile" className="px-3 py-1.5 rounded-xl hover:bg-neutral-100">Profile</a>}
-          {currentUser ? (
-            <>
-              <a href="#/settings" aria-label="Account settings" className="p-1.5 rounded-xl hover:bg-neutral-100"><AccountIcon/></a>
-              <button onClick={onSignOut} className="px-3 py-1.5 rounded-xl bg-neutral-900 text-white hover:opacity-90">Log out</button>
-            </>
+          {currentUserId ? (
+            <button onClick={onSignOut} className="px-3 py-1.5 rounded-xl bg-neutral-900 text-white hover:opacity-90">Log out</button>
           ) : (
             <a href="#/login" className="px-3 py-1.5 rounded-xl bg-neutral-900 text-white">Log in</a>
           )}
@@ -513,19 +146,10 @@ function TopBar({ currentUser, onSignOut }){
     </header>
   );
 }
-function AccountIcon(){return (<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21a8 8 0 0 0-16 0"/><circle cx="12" cy="7" r="4"/></svg>);} 
 
-// Minimalistic InstaFacts logo: Instagram-like gradient square with a white magnifying glass in the center
-function Logo({ size = 28 }){
+function Logo({ size = 28 }:{ size?: number }){
   return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 100 100"
-      role="img"
-      aria-label="InstaFacts"
-      style={{ display: 'block' }}
-    >
+    <svg width={size} height={size} viewBox="0 0 100 100" role="img" aria-label="InstaFacts" style={{ display:'block' }}>
       <defs>
         <linearGradient id="igG" x1="0" y1="0" x2="1" y2="1">
           <stop offset="0%" stopColor="#f58529" />
@@ -534,17 +158,18 @@ function Logo({ size = 28 }){
         </linearGradient>
       </defs>
       <rect x="3" y="3" width="94" height="94" rx="22" fill="url(#igG)" />
-      {/* Magnifying glass */}
       <circle cx="45" cy="45" r="18" fill="none" stroke="#fff" strokeWidth="8" />
       <line x1="58" y1="58" x2="75" y2="75" stroke="#fff" strokeWidth="8" strokeLinecap="round" />
     </svg>
   );
-} 
+}
 
-function LoginCard({ onSignIn, onSignUp, onSeed }){
-  const [mode,setMode]=useState('signin'); const [username,setUsername]=useState(''); const [password,setPassword]=useState(''); const [bio,setBio]=useState(''); const [err,setErr]=useState('');
-  const submit=async()=>{ setErr(''); try{ if(mode==='signin') await onSignIn({username,password}); else await onSignUp({username,password,bio}); }catch(e){ setErr(e.message||String(e)); } };
-  const onKeyDown=(e)=>{ if(e.key==='Enter'){ e.preventDefault(); submit(); } };
+function LoginCard({ onSignIn, onSignUp }:{ onSignIn:(p:{username:string,password?:string})=>void, onSignUp:(p:{username:string,password?:string})=>void }){
+  const [mode,setMode]=useState<'signin'|'signup'>('signin');
+  const [username,setUsername]=useState('');
+  const [password,setPassword]=useState('');
+  const submit=()=>{ if(mode==='signin') onSignIn({ username, password }); else onSignUp({ username, password }); };
+  const onKeyDown=(e:React.KeyboardEvent)=>{ if(e.key==='Enter'){ e.preventDefault(); submit(); } };
   return (
     <div className="mt-12 bg-white border border-neutral-200 rounded-3xl p-6 shadow-sm" onKeyDown={onKeyDown}>
       <div className="flex items-center justify-between mb-4">
@@ -561,40 +186,41 @@ function LoginCard({ onSignIn, onSignUp, onSeed }){
         <label className="text-sm">Password
           <input className="mt-1 w-full border border-neutral-300 rounded-xl px-3 py-2" type="password" value={password} onChange={e=>setPassword(e.target.value)}/>
         </label>
-        {mode==='signup' && (
-          <label className="text-sm">Short bio (optional)
-            <textarea className="mt-1 w-full border border-neutral-300 rounded-xl px-3 py-2" rows={2} value={bio} onChange={e=>setBio(e.target.value)} placeholder="Tell something about yourself"/>
-          </label>
-        )}
-        {err && <p className="text-sm text-red-600">{err}</p>}
         <div className="flex items-center gap-2 mt-2">
           <button onClick={submit} className="px-4 py-2 rounded-xl bg-neutral-900 text-white">{mode==='signin'? 'Log in':'Create account'}</button>
-          <button onClick={onSeed} className="ml-auto px-3 py-2 rounded-xl border border-neutral-300 hover:bg-neutral-50 text-sm">Load demo data</button>
         </div>
       </div>
-      <p className="mt-6 text-xs text-neutral-500">Data layer: auto-detects Supabase in production; local-only in this preview.</p>
     </div>
   );
 }
 
-function HomeFeed({ posts, getUser, onAddComment, onAddReply, onReactPost, onReactComment, isAuthed, currentUserId, onEditPost, onDeletePost, onEditComment, onDeleteComment }){
+function HomeFeed({ posts, getUser, onAddComment, onReactPost, isAuthed, currentUserId, onEditPost, onDeletePost }:{
+  posts: Post[];
+  getUser: (id:string)=>{id:string, username:string, bio:string};
+  onAddComment: (postId:string, content:string)=>void;
+  onReactPost: (postId:string, type:'up'|'down')=>void;
+  isAuthed: boolean;
+  currentUserId: string;
+  onEditPost: (postId:string, caption:string)=>void;
+  onDeletePost: (postId:string)=>void;
+}){
   if (!posts.length) return <p className="mt-10 text-center text-neutral-500">No posts yet. Log in to create one.</p>;
   return (
     <div className="grid gap-6 mt-2">
       {posts.map(p=> (
-        <PostCard key={p.id} post={p} author={getUser(p.userId)} getUser={getUser}
-          onAddComment={onAddComment} onAddReply={onAddReply}
-          onReactPost={onReactPost} onReactComment={doReactComment}
+        <PostCard key={p.id} post={p} author={getUser(p.userId)}
           isAuthed={isAuthed} currentUserId={currentUserId}
-          onEditPost={onEditPost} onDeletePost={onDeletePost}
-          onEditComment={onEditComment} onDeleteComment={onDeleteComment}
+          onAddComment={onAddComment}
+          onReactPost={onReactPost}
+          onEditPost={onEditPost}
+          onDeletePost={onDeletePost}
         />
       ))}
     </div>
   );
 }
 
-function PostReactionsOverlay({ upActive, downActive, onUp, onDown, disabled }): any{
+function PostReactionsOverlay({ upActive, downActive, onUp, onDown, disabled }:{ upActive:boolean, downActive:boolean, onUp:()=>void, onDown:()=>void, disabled:boolean }){
   return (
     <div className="absolute bottom-3 right-3 flex items-center gap-2">
       <button disabled={disabled} onClick={onUp} title="Like"
@@ -609,31 +235,46 @@ function PostReactionsOverlay({ upActive, downActive, onUp, onDown, disabled }):
   );
 }
 
-function InlineReactions({ upActive, downActive, upCount, downCount, onUp, onDown, disabled }){
-  const base = "w-7 h-7 rounded-full border flex items-center justify-center text-xs transition";
-  return (
-    <div className="flex items-center gap-2 text-xs">
-      <button disabled={disabled} onClick={onUp} className={classNames(base, 'border-neutral-300 bg-white', disabled? 'opacity-60':'hover:bg-neutral-50', upActive&&!disabled&&'border-green-500 text-green-600')} title="Like"><ThumbUpIcon/></button>
-      <span className="text-neutral-500">{upCount}</span>
-      <button disabled={disabled} onClick={onDown} className={classNames(base, 'border-neutral-300 bg-white', disabled? 'opacity-60':'hover:bg-neutral-50', downActive&&!disabled&&'border-red-500 text-red-600')} title="Dislike"><ThumbDownIcon/></button>
-      <span className="text-neutral-500">{downCount}</span>
-    </div>
-  );
-}
 function ThumbUpIcon(){return (<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 9V5a3 3 0 0 0-3-3l-3 8v10h9a3 3 0 0 0 3-3v-4a3 3 0 0 0-3-3h-3z"/></svg>);} 
 function ThumbDownIcon(){return (<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10 15v4a3 3 0 0 0 3 3l3-8V4H7a3 3 0 0 0-3 3v4a3 3 0 0 0 3 3h3z"/></svg>);} 
 
-function PostCard({ post, ...props }) {
+function CommentBlock({ c, user }:{ c: Comment, user:{ id:string, username:string } }){
+  return (
+    <div className="flex items-start gap-2 bg-neutral-100 rounded-xl p-3">
+      <div className="w-8 h-8 rounded-full bg-gradient-to-br from-pink-500 to-purple-600 text-white flex items-center justify-center text-xs font-bold">
+        {user.username[0]?.toUpperCase()||'?'}
+      </div>
+      <div className="flex-1">
+        <div className="flex items-center gap-2">
+          <span className="font-medium text-sm">{user.username}</span>
+          {c.edited && <span className="text-xs text-neutral-400">(edited)</span>}
+          <span className="text-xs text-neutral-400 ml-auto">{new Date(c.createdAt).toLocaleString()}</span>
+        </div>
+        <div className="text-sm mt-1 whitespace-pre-wrap break-words">{c.content}</div>
+      </div>
+    </div>
+  );
+}
+
+function PostCard({ post, author, isAuthed, currentUserId, onAddComment, onReactPost, onEditPost, onDeletePost }:{
+  post: Post;
+  author: { id:string, username:string };
+  isAuthed: boolean;
+  currentUserId: string;
+  onAddComment: (postId:string, content:string)=>void;
+  onReactPost: (postId:string, type:'up'|'down')=>void;
+  onEditPost: (postId:string, caption:string)=>void;
+  onDeletePost: (postId:string)=>void;
+}){
   const [expanded, setExpanded] = useState(false);
+  const [editing, setEditing] = useState(false);
   const [captionDraft, setCaptionDraft] = useState(post.caption || '');
   const [comment, setComment] = useState('');
-  const currentUserId = props.currentUserId ?? ''; // Or get from context/auth
-  const isAuthed = props.isAuthed ?? false;        // Or get from context/auth
 
-  const media_urls = post.media?.map(m => m.url) || [];
-const mediaTypes = post.media?.map(m => m.type) || [];
-const mediaCount = media_urls.length;
-const [slide, setSlide] = useState(0);
+  const media_urls = post.media_urls;
+  const mediaTypes = post.mediaTypes;
+  const mediaCount = media_urls.length;
+  const [slide, setSlide] = useState(0);
 
   const comments = Array.isArray(post.comments) ? post.comments : [];
   const shown = expanded ? comments : comments.slice(-2);
@@ -648,10 +289,7 @@ const [slide, setSlide] = useState(0);
     }
   };
 
-  const saveCaption = () => {
-    onEditPost(post.id, captionDraft);
-    setEditing(false);
-  };
+  const saveCaption = () => { onEditPost(post.id, captionDraft); setEditing(false); };
 
   return (
     <article className="bg-white border border-neutral-200 rounded-3xl overflow-hidden shadow-sm">
@@ -682,46 +320,23 @@ const [slide, setSlide] = useState(0);
           {mediaCount > 1 && (
             <div className="absolute top-2 left-1/2 -translate-x-1/2 flex gap-2 z-10">
               {media_urls.map((_, idx) => (
-                <button
-                  key={idx}
-                  onClick={() => setSlide(idx)}
-                  className={classNames(
-                    "w-2 h-2 rounded-full",
-                    slide === idx ? "bg-neutral-900" : "bg-neutral-300"
-                  )}
-                  aria-label={`Go to slide ${idx + 1}`}
-                  tabIndex={0}
-                />
+                <button key={idx} onClick={() => setSlide(idx)} className={classNames("w-2 h-2 rounded-full", slide === idx ? "bg-neutral-900" : "bg-neutral-300")} aria-label={`Go to slide ${idx + 1}`} />
               ))}
             </div>
           )}
           {mediaCount > 1 && (
             <>
-              <button
-                onClick={() => setSlide((slide - 1 + mediaCount) % mediaCount)}
-                className="absolute left-2 top-1/2 -translate-y-1/2 bg-white/70 rounded-full p-1"
-                aria-label="Previous slide"
-                tabIndex={0}
-              >
-                ‹
-              </button>
-              <button
-                onClick={() => setSlide((slide + 1) % mediaCount)}
-                className="absolute right-2 top-1/2 -translate-y-1/2 bg-white/70 rounded-full p-1"
-                aria-label="Next slide"
-                tabIndex={0}
-              >
-                ›
-              </button>
+              <button onClick={() => setSlide((slide - 1 + mediaCount) % mediaCount)} className="absolute left-2 top-1/2 -translate-y-1/2 bg-white/70 rounded-full px-2 py-1" aria-label="Previous slide">‹</button>
+              <button onClick={() => setSlide((slide + 1) % mediaCount)} className="absolute right-2 top-1/2 -translate-y-1/2 bg-white/70 rounded-full px-2 py-1" aria-label="Next slide">›</button>
             </>
           )}
         </div>
         <PostReactionsOverlay
-          upActive={!!props.currentUserId && (post.likesUp||[]).includes(props.currentUserId)}
-          downActive={!!props.currentUserId && (post.likesDown||[]).includes(props.currentUserId)}
-          onUp={()=>props.onReactPost(post.id,'up')}
-          onDown={()=>props.onReactPost(post.id,'down')}
-          disabled={!props.isAuthed}
+          upActive={!!currentUserId && (post.likesUp||[]).includes(currentUserId)}
+          downActive={!!currentUserId && (post.likesDown||[]).includes(currentUserId)}
+          onUp={()=>onReactPost(post.id,'up')}
+          onDown={()=>onReactPost(post.id,'down')}
+          disabled={!isAuthed}
         />
       </div>
 
@@ -733,13 +348,12 @@ const [slide, setSlide] = useState(0);
         )}
         {!isAuthed && <p className="text-xs text-neutral-500 mt-2">Log in to like or comment.</p>}
 
-        {/* Local mode shows comments list; in Supabase mode, extend to fetch joins if desired */}
         {!!comments.length && (
           <div className="mt-3">
             {hidden>0 && !expanded && <button className="text-sm text-neutral-600 hover:underline" onClick={()=>setExpanded(true)}>Show more comments ({hidden})</button>}
             <div className="mt-2 grid gap-3">
               {shown.map(c=> (
-                <CommentBlock key={c.id} postId={post.id} c={c} getUser={getUser} onReactComment={onReactComment} isAuthed={isAuthed} currentUserId={currentUserId} onAddReply={onAddReply} onEditComment={onEditComment} onDeleteComment={onDeleteComment}/>
+                <CommentBlock key={c.id} c={c} user={getUser(c.userId)} />
               ))}
             </div>
             {expanded && hidden>0 && <button className="mt-2 text-sm text-neutral-600 hover:underline" onClick={()=>setExpanded(false)}>Show less</button>}
@@ -751,270 +365,11 @@ const [slide, setSlide] = useState(0);
           <button onClick={submitComment} disabled={!isAuthed||!comment.trim()} className={classNames('px-3 py-2 rounded-xl text-sm', (!isAuthed||!comment.trim())? 'bg-neutral-200 text-neutral-500':'bg-neutral-900 text-white')}>Post</button>
         </div>
       </div>
-
-      {post.comments && post.comments.length > 0 && (
-  <div className="mt-4">
-    <h4 className="text-sm font-semibold mb-2">Comments</h4>
-    <div className="space-y-3">
-      {post.comments.map((c, idx) => (
-        <div key={c.id || idx} className="flex items-start gap-2 bg-neutral-100 rounded-xl p-3">
-          <div className="w-8 h-8 rounded-full bg-gradient-to-br from-pink-500 to-purple-600 text-white flex items-center justify-center text-xs font-bold">
-            {(typeof getUser === "function" ? getUser(c.userId)?.username : c.userId)?.[0]?.toUpperCase() || "?"}
-          </div>
-          <div className="flex-1">
-            <div className="flex items-center gap-2">
-              <span className="font-medium text-sm">{typeof getUser === "function" ? getUser(c.userId)?.username : c.userId}</span>
-              {c.edited && <span className="text-xs text-neutral-400">(edited)</span>}
-              <span className="text-xs text-neutral-400 ml-auto">{c.createdAt ? new Date(c.createdAt).toLocaleString() : ""}</span>
-            </div>
-            <div className="text-sm mt-1 whitespace-pre-wrap break-words">{c.content}</div>
-            <div className="flex gap-2 mt-2">
-              <button
-                className={`px-2 py-1 rounded text-xs ${c.likesUp?.includes(props.currentUserId ?? "") ? "bg-green-100 text-green-700" : "bg-neutral-200"}`}
-                disabled={!props.isAuthed}
-                onClick={() => props.onReactComment ? props.onReactComment(post.id, c.id, undefined, "up") : undefined}
-              >
-                👍 {c.likesUp?.length || 0}
-              </button>
-              <button
-                className={`px-2 py-1 rounded text-xs ${c.likesDown?.includes(props.currentUserId ?? "") ? "bg-red-100 text-red-700" : "bg-neutral-200"}`}
-                disabled={!props.isAuthed}
-                onClick={() => props.onReactComment ? props.onReactComment(post.id, c.id, undefined, "down") : undefined}
-              >
-                👎 {c.likesDown?.length || 0}
-              </button>
-              {(props.currentUserId ?? "") === c.userId && (
-                <>
-                  <button
-                    className="px-2 py-1 rounded text-xs bg-neutral-200"
-                    disabled={!props.onEditComment}
-                    onClick={() => props.onEditComment ? props.onEditComment(post.id, c.id, undefined, c.content) : undefined}
-                  >
-                    Edit
-                  </button>
-                  <button
-                    className="px-2 py-1 rounded text-xs bg-neutral-200 text-red-600"
-                    disabled={!props.onDeleteComment}
-                    onClick={() => props.onDeleteComment ? props.onDeleteComment(post.id, c.id, undefined) : undefined}
-                  >
-                    Delete
-                  </button>
-                </>
-              )}
-            </div>
-          </div>
-        </div>
-      ))}
-    </div>
-  </div>
-)}
-
     </article>
   );
 }
 
-type Comment = {
-  id: string;
-  // ...other fields...
-};
-
-type PostProps = {
-  post: { id: string; caption: string; edited?: boolean };
-  comments: Comment[];
-  getUser: (id: string) => any;
-  onReactComment: Function;
-  isAuthed: boolean;
-  currentUserId: string;
-  onAddReply: Function;
-  onEditComment: Function;
-  onDeleteComment: Function;
-};
-
-function Post({
-  post,
-  comments,
-  getUser,
-  onReactComment,
-  isAuthed,
-  currentUserId,
-  onAddReply,
-  onEditComment,
-  onDeleteComment,
-}: PostProps) {
-  const [editing, setEditing] = useState(false);
-  const [captionDraft, setCaptionDraft] = useState(post.caption);
-  const [expanded, setExpanded] = useState(false);
-  const [comment, setComment] = useState('');
-
-  // Example logic for shown/hidden comments
-  const hidden = Math.max(0, comments.length - 3);
-  const shown = expanded ? comments : comments.slice(-3);
-
-  function saveCaption() {
-    // Save logic here
-    setEditing(false);
-  }
-
-  function submitComment() {
-    // Submit logic here
-    setComment('');
-  }
-
-  return (
-    <article>
-      <div className="p-4">
-        {!editing ? (
-          <p className="text-sm whitespace-pre-wrap break-words">
-            {post.caption}{' '}
-            {post.edited && (
-              <span className="text-neutral-400">(edited)</span>
-            )}
-          </p>
-        ) : (
-          <textarea
-            className="w-full border border-neutral-300 rounded-xl px-3 py-2 text-sm"
-            value={captionDraft}
-            onChange={e => setCaptionDraft(e.target.value)}
-            onKeyDown={e => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                saveCaption();
-              }
-            }}
-          />
-        )}
-        {!isAuthed && (
-          <p className="text-xs text-neutral-500 mt-2">
-            Log in to like or comment.
-          </p>
-        )}
-
-        {!!comments.length && (
-          <div className="mt-3">
-            {hidden > 0 && !expanded && (
-              <button
-                className="text-sm text-neutral-600 hover:underline"
-                onClick={() => setExpanded(true)}
-              >
-                Show more comments ({hidden})
-              </button>
-            )}
-            <div className="mt-2 grid gap-3">
-              {shown.map(c => (
-                <CommentBlock
-                  key={c.id}
-                  postId={post.id}
-                  c={c}
-                  getUser={getUser}
-                  onReactComment={onReactComment}
-                  isAuthed={isAuthed}
-                  currentUserId={currentUserId}
-                  onAddReply={onAddReply}
-                  onEditComment={onEditComment}
-                  onDeleteComment={onDeleteComment}
-                />
-              ))}
-            </div>
-            {expanded && hidden > 0 && (
-              <button
-                className="mt-2 text-sm text-neutral-600 hover:underline"
-                onClick={() => setExpanded(false)}
-              >
-                Show less
-              </button>
-            )}
-          </div>
-        )}
-
-        <div className="mt-3 flex gap-2">
-          <input
-            value={comment}
-            onChange={e => setComment(e.target.value)}
-            onKeyDown={e => {
-              if (e.key === 'Enter') {
-                e.preventDefault();
-                submitComment();
-              }
-            }}
-            placeholder={isAuthed ? 'Add a comment' : 'Log in to comment'}
-            disabled={!isAuthed}
-            className="flex-1 border border-neutral-300 rounded-xl px-3 py-2 text-sm disabled:bg-neutral-100"
-          />
-          <button
-            onClick={submitComment}
-            disabled={!isAuthed || !comment.trim()}
-            className={
-              (!isAuthed || !comment.trim())
-                ? 'px-3 py-2 rounded-xl text-sm bg-neutral-200 text-neutral-500'
-                : 'px-3 py-2 rounded-xl text-sm bg-neutral-900 text-white'
-            }
-          >
-            Post
-          </button>
-        </div>
-      </div>
-
-      {post.comments && post.comments.length > 0 && (
-  <div className="mt-4">
-    <h4 className="text-sm font-semibold mb-2">Comments</h4>
-    <div className="space-y-3">
-      {post.comments.map((c, idx) => (
-        <div key={c.id || idx} className="flex items-start gap-2 bg-neutral-100 rounded-xl p-3">
-          <div className="w-8 h-8 rounded-full bg-gradient-to-br from-pink-500 to-purple-600 text-white flex items-center justify-center text-xs font-bold">
-            {(getUser ? getUser(c.userId)?.username : c.userId)?.[0]?.toUpperCase() || "?"}
-          </div>
-          <div className="flex-1">
-            <div className="flex items-center gap-2">
-              <span className="font-medium text-sm">{getUser ? getUser(c.userId)?.username : c.userId}</span>
-              {c.edited && <span className="text-xs text-neutral-400">(edited)</span>}
-              <span className="text-xs text-neutral-400 ml-auto">{c.createdAt ? new Date(c.createdAt).toLocaleString() : ""}</span>
-            </div>
-            <div className="text-sm mt-1 whitespace-pre-wrap break-words">{c.content}</div>
-            {/* Like/Dislike buttons (optional) */}
-            <div className="flex gap-2 mt-2">
-              <button
-                className={`px-2 py-1 rounded text-xs ${c.likesUp?.includes(currentUserId) ? "bg-green-100 text-green-700" : "bg-neutral-200"}`}
-                disabled={!isAuthed}
-                onClick={() => onReactComment && onReactComment(post.id, c.id, undefined, "up")}
-              >
-                👍 {c.likesUp?.length || 0}
-              </button>
-              <button
-                className={`px-2 py-1 rounded text-xs ${c.likesDown?.includes(currentUserId) ? "bg-red-100 text-red-700" : "bg-neutral-200"}`}
-                disabled={!isAuthed}
-                onClick={() => onReactComment && onReactComment(post.id, c.id, undefined, "down")}
-              >
-                👎 {c.likesDown?.length || 0}
-              </button>
-              {/* Edit/Delete for owner */}
-              {currentUserId === c.userId && (
-                <>
-                  <button className="px-2 py-1 rounded text-xs bg-neutral-200" onClick={() => onEditComment && onEditComment(post.id, c.id, undefined, c.content)}>
-                    Edit
-                  </button>
-                  <button className="px-2 py-1 rounded text-xs bg-neutral-200 text-red-600" onClick={() => onDeleteComment && onDeleteComment(post.id, c.id, undefined)}>
-                    Delete
-                  </button>
-                </>
-              )}
-            </div>
-          </div>
-        </div>
-      ))}
-    </div>
-  </div>
-)}
-
-    </article>
-  );
-}
-
-function Spinner() { return <div>Loading...</div>; }
-function NewPost(props) { return <div>New Post Component</div>; }
-function Profile(props) { return <div>Profile Component</div>; }
-function UserPublic(props) { return <div>User Public Component</div>; }
-function AccountSettings(props) { return <div>Account Settings Component</div>; }
-function Footer(props) { return <footer>Footer</footer>; }
+function Footer() { return <footer className="text-center text-xs text-neutral-400 py-6">InstaFacts</footer>; }
 
 export default App;
 
