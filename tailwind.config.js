@@ -1,6 +1,10 @@
 /** @type {import('tailwindcss').Config} */
 export default {
-  content: ["./index.html", "./src/**/*.{ts,tsx,js,jsx}"],
+  // Include root-level files because this project keeps App.tsx at the root
+  content: [
+    "./index.html",
+    "./**/*.{ts,tsx,js,jsx}",
+  ],
   theme: {
     extend: {},
   },

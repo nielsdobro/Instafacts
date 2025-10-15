@@ -1,143 +1,235 @@
 import React, { useEffect, useRef, useState } from "react";
+import { createClient } from "@supabase/supabase-js";
 
-type Comment = {
-  id: string;
-  userId: string;
-  content: string;
-  createdAt: number;
-  replies: Comment[];
-  likesUp: string[];
-  likesDown: string[];
-  edited?: boolean;
-};
-
-type Post = {
-  id: string;
-  userId: string;
-  caption: string;
-  createdAt: number;
-  media_urls: string[];
-  mediaTypes: ("image"|"video")[];
-  comments: Comment[];
-  likesUp: string[];
-  likesDown: string[];
-  edited?: boolean;
-};
+type Comment = { id: string; userId: string; content: string; createdAt: number; replies: Comment[]; likesUp: string[]; likesDown: string[]; edited?: boolean; };
+type Post = { id: string; userId: string; caption: string; createdAt: number; media_urls: string[]; mediaTypes: ("image"|"video")[]; comments: Comment[]; likesUp: string[]; likesDown: string[]; edited?: boolean; };
 
 const classNames = (...a: (string|false|undefined)[]) => a.filter(Boolean).join(" ");
 const uid = (p="id") => `${p}_${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
-const timeAgo = (ts:number) => {
-  const s = Math.floor((Date.now()-ts)/1000);
-  if (s<60) return `${s}s`; const m=Math.floor(s/60); if (m<60) return `${m}m`;
-  const h=Math.floor(m/60); if (h<24) return `${h}h`; const d=Math.floor(h/24); if (d<7) return `${d}d`;
-  return new Date(ts).toLocaleDateString();
+const timeAgo = (ts:number) => { const s=Math.floor((Date.now()-ts)/1000); if(s<60) return `${s}s`; const m=Math.floor(s/60); if(m<60) return `${m}m`; const h=Math.floor(m/60); if(h<24) return `${h}h`; const d=Math.floor(h/24); if(d<7) return `${d}d`; return new Date(ts).toLocaleDateString(); };
+
+function useToast(){ const [toast, setToast] = useState<string|null>(null); const t = useRef<number|undefined>(undefined); const showToast=(msg:string,ms=2000)=>{ setToast(msg); if(t.current) window.clearTimeout(t.current); t.current=window.setTimeout(()=>setToast(null),ms); }; useEffect(()=>()=>{ if(t.current) window.clearTimeout(t.current); },[]); return { toast, showToast }; }
+function Toast({ msg }:{ msg:string }){ return <div className="fixed top-3 left-1/2 -translate-x-1/2 bg-neutral-900 text-white px-4 py-2 rounded-xl shadow z-50">{msg}</div>; }
+
+type DataLayer = {
+  mode: 'supabase'|'local';
+  currentUser: { id:string, email?:string } | null;
+  isAdmin: boolean;
+  signIn(p:{email:string, password:string}): Promise<void>;
+  signUp(p:{email:string, password:string}): Promise<void>;
+  signOut(): Promise<void>;
+  listPosts(): Promise<Post[]>;
+  addComment(p:{ postId:string, content:string }): Promise<void>;
+  updatePost(p:{ postId:string, caption:string }): Promise<void>;
+  deletePost(p:{ postId:string }): Promise<void>;
+  toggleReactPost(p:{ postId:string, type:'up'|'down' }): Promise<void>;
+  createPost(p:{ files: File[], caption: string }): Promise<void>;
+  deleteAllPostsByUser?(userId:string): Promise<void>;
+  subscribe?(onChange:()=>void): ()=>void;
+  seed?():void;
 };
 
-function useToast(){
-  const [toast, setToast] = useState<string|null>(null);
-  const t = useRef<number|undefined>(undefined);
-  const showToast = (msg:string, ms=2000)=>{
-    setToast(msg);
-    if (t.current) window.clearTimeout(t.current);
-    t.current = window.setTimeout(()=>setToast(null), ms);
-  };
-  useEffect(()=>()=>{ if (t.current) window.clearTimeout(t.current); },[]);
-  return { toast, showToast };
+function useDataLayer(){
+  const [layer,setLayer] = useState<DataLayer|null>(null);
+  useEffect(()=>{
+    (async()=>{
+      const url = import.meta.env.VITE_SUPABASE_URL as string|undefined;
+      const anon = import.meta.env.VITE_SUPABASE_ANON_KEY as string|undefined;
+      const adminEmail = import.meta.env.VITE_ADMIN_EMAIL as string|undefined;
+      if(url && anon){
+        const sb = createClient(url, anon);
+        setLayer(await createSupabaseLayer(sb, adminEmail));
+      } else {
+        setLayer(createLocalLayer());
+      }
+    })();
+  },[]);
+  return layer;
 }
 
-function Toast({ msg }:{ msg:string }){
-  return <div className="fixed top-3 left-1/2 -translate-x-1/2 bg-neutral-900 text-white px-4 py-2 rounded-xl shadow z-50">{msg}</div>;
+async function createSupabaseLayer(supabase:any, adminEmail?:string): Promise<DataLayer>{
+  const getUser = async ()=>{ const { data } = await supabase.auth.getUser(); return data?.user||null; };
+  const user = await getUser();
+  const isAdmin = !!(user?.email && adminEmail && user.email.toLowerCase()===adminEmail.toLowerCase());
+  const bucket = import.meta.env.VITE_SUPABASE_BUCKET || 'media';
+  return {
+    mode:'supabase',
+    currentUser: user? { id:user.id, email:user.email }: null,
+    isAdmin,
+    async signIn({ email, password }){ const { error } = await supabase.auth.signInWithPassword({ email, password }); if(error) throw error; },
+    async signUp({ email, password }){ const { error } = await supabase.auth.signUp({ email, password }); if(error) throw error; },
+    async signOut(){ await supabase.auth.signOut(); },
+    async listPosts(){
+      const { data: posts, error: e1 } = await supabase.from('posts').select('*').order('created_at',{ascending:false}).limit(50);
+      if (e1) throw e1;
+      if (!posts?.length) return [] as Post[];
+      const postIds = posts.map((p:any)=>p.id);
+      const { data: comments, error: e2 } = await supabase.from('comments').select('*').in('post_id', postIds).order('created_at',{ascending:true});
+      if (e2) throw e2;
+      const byPost = new Map<string, Comment[]>();
+      (comments||[]).forEach((c:any)=>{
+        const arr = byPost.get(c.post_id) || [];
+        arr.push({ id:c.id, userId:c.user_id, content:c.content, createdAt:new Date(c.created_at).getTime(), replies:[], likesUp:c.likes_up||[], likesDown:c.likes_down||[], edited: !!c.edited });
+        byPost.set(c.post_id, arr);
+      });
+      return posts.map((p:any)=>({ id:p.id, userId:p.user_id, caption:p.caption, createdAt:new Date(p.created_at).getTime(), media_urls:p.media_urls||[], mediaTypes:p.media_types||[], comments: byPost.get(p.id)||[], likesUp:p.likes_up||[], likesDown:p.likes_down||[], edited: !!p.edited }));
+    },
+    async createPost({ files, caption }){
+      const u = await getUser();
+      if (!u) throw new Error('Login required');
+      const media_urls: string[] = [];
+      const media_types: ("image"|"video")[] = [];
+      let idx = 0;
+      for (const file of files){
+        if (!file) continue;
+        const isVideo = file.type.startsWith('video');
+        const path = `${u.id}/${Date.now()}_${idx++}.${isVideo? (file.name.split('.').pop()||'mp4') : (file.name.split('.').pop()||'jpg')}`;
+        const { error: upErr } = await supabase.storage.from(bucket).upload(path, file, { upsert: false });
+        if (upErr) throw upErr;
+        const { data } = supabase.storage.from(bucket).getPublicUrl(path);
+        media_urls.push(data.publicUrl);
+        media_types.push(isVideo? 'video':'image');
+      }
+      const { error } = await supabase.from('posts').insert({ caption, media_urls, media_types });
+      if (error) throw error;
+    },
+    async addComment({ postId, content }){
+      const { error } = await supabase.from('comments').insert({ post_id: postId, content });
+      if (error) throw error;
+    },
+    async updatePost({ postId, caption }){
+      const { error } = await supabase.from('posts').update({ caption, edited:true }).eq('id', postId);
+      if (error) throw error;
+    },
+    async deletePost({ postId }){
+      const { error } = await supabase.from('posts').delete().eq('id', postId);
+      if (error) throw error;
+    },
+    async toggleReactPost({ postId, type }){
+      const { data, error } = await supabase.from('posts').select('likes_up, likes_down').eq('id', postId).single();
+      if (error) throw error;
+      const u = await getUser();
+      const userId = u?.id; if (!userId) return;
+      const up = new Set<string>(data?.likes_up||[]), down = new Set<string>(data?.likes_down||[]);
+      if (type==='up'){ up.has(userId)? up.delete(userId):(up.add(userId), down.delete(userId)); } else { down.has(userId)? down.delete(userId):(down.add(userId), up.delete(userId)); }
+      const { error: e2 } = await supabase.from('posts').update({ likes_up:[...up], likes_down:[...down] }).eq('id', postId);
+      if (e2) throw e2;
+    },
+    async deleteAllPostsByUser(userId:string){
+      const { error } = await supabase.from('posts').delete().eq('user_id', userId);
+      if (error) throw error;
+    },
+    subscribe(onChange){
+      const ch = supabase.channel('realtime:instafacts')
+        .on('postgres_changes', { event:'*', schema:'public', table:'posts' }, onChange)
+        .on('postgres_changes', { event:'*', schema:'public', table:'comments' }, onChange)
+        .subscribe();
+      return ()=>{ supabase.removeChannel(ch); };
+    },
+  };
+}
+
+function createLocalLayer(): DataLayer{
+  const state = {
+    currentUser: null as { id:string, email?:string } | null,
+    posts: [] as Post[],
+  };
+  return {
+    mode:'local',
+    currentUser: state.currentUser,
+    isAdmin: true,
+    async signIn(){ state.currentUser = { id:'user_local' }; },
+    async signUp(){ state.currentUser = { id:'user_local' }; },
+    async signOut(){ state.currentUser = null; },
+    async listPosts(){ return state.posts; },
+    async createPost({ files, caption }){ const urls: string[] = []; const types: ("image"|"video")[] = []; for (const f of files){ if (!f) continue; const isVideo = f.type.startsWith('video'); urls.push(URL.createObjectURL(f)); types.push(isVideo? 'video':'image'); } state.posts = [{ id:uid('p'), userId: state.currentUser?.id||'user_local', caption, createdAt: Date.now(), media_urls: urls, mediaTypes: types, comments:[], likesUp:[], likesDown:[], edited:false }, ...state.posts ]; },
+    async addComment({ postId, content }){ state.posts = state.posts.map(p=> p.id===postId? { ...p, comments:[...p.comments, { id:uid('c'), userId: state.currentUser?.id||'user_local', content, createdAt:Date.now(), replies:[], likesUp:[], likesDown:[] } ] } : p ); },
+    async updatePost({ postId, caption }){ state.posts = state.posts.map(p=> p.id===postId? { ...p, caption, edited:true } : p ); },
+    async deletePost({ postId }){ state.posts = state.posts.filter(p=>p.id!==postId); },
+    async toggleReactPost(){},
+    async deleteAllPostsByUser(userId:string){ state.posts = state.posts.filter(p=>p.userId!==userId); },
+    seed(){
+      state.posts = [
+        { id:uid('p'), userId:'alice', caption:'Hello Supabase 👋', createdAt:Date.now()-60000, media_urls:[], mediaTypes:[], comments:[], likesUp:[], likesDown:[], edited:false},
+        { id:uid('p'), userId:'bob', caption:'Second post', createdAt:Date.now()-3600000, media_urls:[], mediaTypes:[], comments:[], likesUp:[], likesDown:[], edited:false},
+      ];
+    }
+  };
 }
 
 function App(){
+  const data = useDataLayer();
   const [route, setRoute] = useState<string>(()=>parseHash());
-  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [posts, setPosts] = useState<Post[]>([]);
+  const [loading, setLoading] = useState<boolean>(false);
   const { toast, showToast } = useToast();
+  useEffect(()=>{ const onHash=()=>setRoute(parseHash()); window.addEventListener('hashchange', onHash); return ()=>window.removeEventListener('hashchange', onHash); },[]);
+  useEffect(()=>{ if(!data) return; if (data.mode==='local') data.seed?.(); refresh(); const unsub = data.subscribe? data.subscribe(()=>refresh()): undefined; return ()=>{ unsub && unsub(); }; },[data]);
+  const isAuthed = !!data?.currentUser;
+  const isAdmin = !!data?.isAdmin;
 
-  useEffect(()=>{
-    const onHash = () => setRoute(parseHash());
-    window.addEventListener('hashchange', onHash);
-    return () => window.removeEventListener('hashchange', onHash);
-  },[]);
+  async function refresh(){ if(!data) return; try { setLoading(true); const list = await data.listPosts(); setPosts(list); } catch(e:any){ showToast('Failed to load posts'); } finally { setLoading(false);} }
 
-  const isAuthed = !!currentUserId;
+  const doSignIn = async ({ email, password }:{ email:string, password:string })=>{ try { await data?.signIn({ email, password }); window.location.hash = '#/home'; refresh(); } catch(e:any){ showToast(e.message||'Sign in failed'); } };
+  const doSignUp = async ({ email, password }:{ email:string, password:string })=>{ try { await data?.signUp({ email, password }); window.location.hash = '#/home'; refresh(); } catch(e:any){ showToast(e.message||'Sign up failed'); } };
+  const doSignOut = async ()=>{ try { await data?.signOut(); window.location.hash = '#/home'; refresh(); } catch(e:any){ showToast('Sign out failed'); } };
 
-  const doSignIn = async ({ username }: { username:string }) => {
-    setCurrentUserId(username || "user1");
-    window.location.hash = '#/home';
-  };
-  const doSignUp = async ({ username }: { username:string }) => doSignIn({ username });
-  const doSignOut = async () => { setCurrentUserId(null); window.location.hash = '#/home'; };
-
-  const getUser = (id:string) => ({ id, username: id, bio: '' });
-
-  const onAddComment = (postId:string, content:string) => {
-    if (!isAuthed) return showToast('Please log in');
-    setPosts(ps => ps.map(p => p.id===postId ? ({
-      ...p,
-      comments: [...p.comments, { id: uid('c'), userId: currentUserId!, content, createdAt: Date.now(), replies: [], likesUp: [], likesDown: [] }]
-    }) : p));
-  };
-
-  const onReactPost = (postId:string, type:'up'|'down') => {
-    if (!isAuthed) return showToast('Please log in');
-    setPosts(ps => ps.map(p => {
-      if (p.id!==postId) return p;
-      const up = new Set(p.likesUp), down = new Set(p.likesDown);
-      if (type==='up'){ up.has(currentUserId!)? up.delete(currentUserId!):(up.add(currentUserId!), down.delete(currentUserId!)); }
-      else { down.has(currentUserId!)? down.delete(currentUserId!):(down.add(currentUserId!), up.delete(currentUserId!)); }
-      return { ...p, likesUp:[...up], likesDown:[...down] };
-    }));
-  };
-
-  const onEditPost = (postId:string, caption:string) => {
-    setPosts(ps => ps.map(p => p.id===postId ? ({ ...p, caption, edited: true }) : p));
-  };
-  const onDeletePost = (postId:string) => setPosts(ps => ps.filter(p => p.id!==postId));
+  const onAddComment = async (postId:string, content:string)=>{ try { await data?.addComment({ postId, content }); refresh(); } catch(e:any){ showToast('Failed to add comment'); } };
+  const onEditPost   = async (postId:string, caption:string)=>{ try { await data?.updatePost({ postId, caption }); refresh(); } catch(e:any){ showToast('Failed to update'); } };
+  const onDeletePost = async (postId:string)=>{ try { await data?.deletePost({ postId }); refresh(); } catch(e:any){ showToast('Failed to delete'); } };
+  const onReactPost  = async (postId:string, type:'up'|'down')=>{ try { await data?.toggleReactPost({ postId, type }); refresh(); } catch(e:any){ showToast('Failed to react'); } };
+  const deleteAllByUser = async (userId:string)=>{ try { await data?.deleteAllPostsByUser?.(userId); refresh(); } catch(e:any){ showToast('Admin policy not configured'); } };
+  const onCreatePost = async (files: File[], caption: string)=>{ try { await data?.createPost({ files, caption }); window.location.hash = '#/home'; refresh(); showToast('Posted'); } catch(e:any){ showToast(e.message||'Failed to post'); } };
 
   return (
     <div className="min-h-screen bg-neutral-50 text-neutral-900">
-      <TopBar currentUserId={currentUserId} onSignOut={doSignOut} />
-      <div className="max-w-2xl mx-auto px-4 pb-24">
+      <TopBar currentUserEmail={data?.currentUser?.email} onSignOut={doSignOut} />
+      <div className="max-w-5xl mx-auto px-4 pb-24">
         {toast && <Toast msg={toast} />}
-        {route === 'login' && !isAuthed && (
-          <LoginCard onSignIn={doSignIn} onSignUp={doSignUp} />
-        )}
-        {route === 'home' && (
-          <HomeFeed
-            posts={posts}
-            getUser={getUser}
-            onAddComment={onAddComment}
-            onReactPost={onReactPost}
-            isAuthed={isAuthed}
-            currentUserId={currentUserId || ''}
-            onEditPost={onEditPost}
-            onDeletePost={onDeletePost}
-          />
+        {route==='login' && !isAuthed && <div className="max-w-md mx-auto"><LoginCard onSignIn={doSignIn} onSignUp={doSignUp} /></div>}
+        {route==='new' && isAuthed && <div className="max-w-md mx-auto"><NewPost onCreate={onCreatePost} /></div>}
+        {route==='home' && (
+          <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,680px)_320px] gap-8 mt-4">
+            <div>
+              {isAdmin && posts.length>0 && (
+                <AdminPanel posts={posts} onDeleteAll={deleteAllByUser} />
+              )}
+              {loading ? <FeedSkeleton /> : (
+                <HomeFeed posts={posts} getUser={(id)=>({ id, username:id, bio:'' })}
+                  onAddComment={onAddComment} onReactPost={onReactPost}
+                  isAuthed={isAuthed} currentUserId={data?.currentUser?.id||''}
+                  onEditPost={onEditPost} onDeletePost={onDeletePost}
+                />
+              )}
+            </div>
+            <aside className="hidden lg:block">
+              <RightRail />
+            </aside>
+          </div>
         )}
       </div>
+      <MobileTabbar isAuthed={isAuthed} />
       <Footer />
     </div>
   );
 }
 
-function parseHash(){
-  const raw = window.location.hash.replace(/^#\/?/, '');
-  if (!raw) return 'home';
-  if ([ 'home','login' ].includes(raw)) return raw;
-  return 'home';
-}
+function parseHash(){ const raw=window.location.hash.replace(/^#\/?/,''); if(!raw) return 'home'; if(['home','login','new'].includes(raw)) return raw; return 'home'; }
 
-function TopBar({ currentUserId, onSignOut }:{ currentUserId: string|null, onSignOut: ()=>void }){
+function TopBar({ currentUserEmail, onSignOut }:{ currentUserEmail?: string, onSignOut: ()=>void }){
   return (
-    <header className="sticky top-0 z-20 bg-white/80 backdrop-blur border-b border-neutral-200">
-      <div className="max-w-2xl mx-auto px-4 py-3 flex items-center justify-between">
-        <a href="#/home" className="hover:opacity-90"><Logo size={26} /></a>
+    <header className="sticky top-0 z-30 bg-white/80 backdrop-blur border-b border-neutral-200">
+      <div className="max-w-xl md:max-w-2xl mx-auto px-4 py-2.5 flex items-center justify-between">
+        <a href="#/home" className="flex items-center gap-2 hover:opacity-90">
+          <Logo size={26} />
+          <span className="hidden sm:block font-semibold tracking-tight">InstaFacts</span>
+        </a>
         <div className="flex items-center gap-2 text-sm">
-          <a href="#/home" className="px-3 py-1.5 rounded-xl hover:bg-neutral-100">Home</a>
-          {currentUserId ? (
-            <button onClick={onSignOut} className="px-3 py-1.5 rounded-xl bg-neutral-900 text-white hover:opacity-90">Log out</button>
+          {currentUserEmail ? (
+            <>
+              <span className="px-2 text-neutral-600 hidden sm:block">{currentUserEmail}</span>
+              <button onClick={onSignOut} className="px-3 py-1.5 rounded-xl bg-neutral-900 text-white hover:opacity-90">Log out</button>
+            </>
           ) : (
             <a href="#/login" className="px-3 py-1.5 rounded-xl bg-neutral-900 text-white">Log in</a>
           )}
@@ -164,11 +256,11 @@ function Logo({ size = 28 }:{ size?: number }){
   );
 }
 
-function LoginCard({ onSignIn, onSignUp }:{ onSignIn:(p:{username:string,password?:string})=>void, onSignUp:(p:{username:string,password?:string})=>void }){
+function LoginCard({ onSignIn, onSignUp }:{ onSignIn:(p:{email:string,password:string})=>void, onSignUp:(p:{email:string,password:string})=>void }){
   const [mode,setMode]=useState<'signin'|'signup'>('signin');
-  const [username,setUsername]=useState('');
+  const [email,setEmail]=useState('');
   const [password,setPassword]=useState('');
-  const submit=()=>{ if(mode==='signin') onSignIn({ username, password }); else onSignUp({ username, password }); };
+  const submit=()=>{ if(mode==='signin') onSignIn({ email, password }); else onSignUp({ email, password }); };
   const onKeyDown=(e:React.KeyboardEvent)=>{ if(e.key==='Enter'){ e.preventDefault(); submit(); } };
   return (
     <div className="mt-12 bg-white border border-neutral-200 rounded-3xl p-6 shadow-sm" onKeyDown={onKeyDown}>
@@ -180,8 +272,8 @@ function LoginCard({ onSignIn, onSignUp }:{ onSignIn:(p:{username:string,passwor
         </div>
       </div>
       <div className="grid gap-3">
-        <label className="text-sm">Username
-          <input className="mt-1 w-full border border-neutral-300 rounded-xl px-3 py-2" value={username} onChange={e=>setUsername(e.target.value)} placeholder="e.g. alice"/>
+        <label className="text-sm">Email
+          <input className="mt-1 w-full border border-neutral-300 rounded-xl px-3 py-2" value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@example.com"/>
         </label>
         <label className="text-sm">Password
           <input className="mt-1 w-full border border-neutral-300 rounded-xl px-3 py-2" type="password" value={password} onChange={e=>setPassword(e.target.value)}/>
@@ -189,6 +281,59 @@ function LoginCard({ onSignIn, onSignUp }:{ onSignIn:(p:{username:string,passwor
         <div className="flex items-center gap-2 mt-2">
           <button onClick={submit} className="px-4 py-2 rounded-xl bg-neutral-900 text-white">{mode==='signin'? 'Log in':'Create account'}</button>
         </div>
+      </div>
+      <p className="mt-4 text-xs text-neutral-500">Set VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY, and optional VITE_ADMIN_EMAIL in your Vercel env vars.</p>
+    </div>
+  );
+}
+
+function NewPost({ onCreate }:{ onCreate:(files: File[], caption: string)=>void }){
+  const [files, setFiles] = useState<File[]>([]);
+  const [caption, setCaption] = useState('');
+  const onPick = (e: React.ChangeEvent<HTMLInputElement>)=>{ const list = e.target.files; if(!list) return; setFiles(Array.from(list)); };
+  const submit = ()=>{ if (!files.length && !caption.trim()) return; onCreate(files, caption.trim()); };
+  return (
+    <div className="bg-white border border-neutral-200 rounded-3xl p-4 shadow">
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="font-semibold">Create new post</h2>
+        <a href="#/home" className="text-sm text-neutral-500 hover:underline">Cancel</a>
+      </div>
+      <div className="grid gap-3">
+        <input type="file" accept="image/*,video/*" multiple onChange={onPick} className="block w-full text-sm" />
+        {!!files.length && (
+          <div className="grid grid-cols-3 gap-2">
+            {files.slice(0,9).map((f, i)=> (
+              <div key={i} className="aspect-square bg-neutral-200 rounded-lg overflow-hidden">
+                <Preview file={f} />
+              </div>
+            ))}
+          </div>
+        )}
+        <textarea className="w-full border border-neutral-300 rounded-xl px-3 py-2 text-sm" rows={3} placeholder="Write a caption..." value={caption} onChange={e=>setCaption(e.target.value)} />
+        <button onClick={submit} disabled={!files.length && !caption.trim()} className={classNames('px-4 py-2 rounded-xl text-sm', (!files.length && !caption.trim())? 'bg-neutral-200 text-neutral-500':'bg-neutral-900 text-white')}>Share</button>
+      </div>
+    </div>
+  );
+}
+
+function Preview({ file }:{ file: File }){
+  const [url,setUrl] = useState<string>('');
+  useEffect(()=>{ const u = URL.createObjectURL(file); setUrl(u); return ()=>URL.revokeObjectURL(u); },[file]);
+  if (file.type.startsWith('video')) return <video src={url} className="w-full h-full object-cover" />;
+  return <img src={url} alt="preview" className="w-full h-full object-cover" />;
+}
+
+function AdminPanel({ posts, onDeleteAll }:{ posts:Post[], onDeleteAll:(userId:string)=>void }){
+  const users = Array.from(new Set(posts.map(p=>p.userId)));
+  const [target, setTarget] = useState(users[0]||'');
+  return (
+    <div className="mt-4 mb-2 p-3 border border-red-300 rounded-xl bg-red-50 text-sm">
+      <div className="flex items-center gap-2">
+        <strong className="text-red-700">Admin</strong>
+        <select className="border border-neutral-300 rounded-lg px-2 py-1" value={target} onChange={e=>setTarget(e.target.value)}>
+          {users.map(u=> <option key={u} value={u}>{u}</option>)}
+        </select>
+        <button className="ml-auto px-3 py-1.5 rounded-lg bg-red-600 text-white" onClick={()=>target && onDeleteAll(target)}>Delete all posts by user</button>
       </div>
     </div>
   );
@@ -204,7 +349,7 @@ function HomeFeed({ posts, getUser, onAddComment, onReactPost, isAuthed, current
   onEditPost: (postId:string, caption:string)=>void;
   onDeletePost: (postId:string)=>void;
 }){
-  if (!posts.length) return <p className="mt-10 text-center text-neutral-500">No posts yet. Log in to create one.</p>;
+  if (!posts.length) return <p className="mt-16 text-center text-neutral-500">No posts yet.</p>;
   return (
     <div className="grid gap-6 mt-2">
       {posts.map(p=> (
@@ -281,18 +426,11 @@ function PostCard({ post, author, isAuthed, currentUserId, onAddComment, onReact
   const hidden = Math.max(0, comments.length - shown.length);
   const isOwner = currentUserId === post.userId;
 
-  const submitComment = () => {
-    if (!isAuthed) return;
-    if (comment.trim()) {
-      onAddComment(post.id, comment);
-      setComment('');
-    }
-  };
-
+  const submitComment = () => { if (!isAuthed) return; if (comment.trim()) { onAddComment(post.id, comment); setComment(''); } };
   const saveCaption = () => { onEditPost(post.id, captionDraft); setEditing(false); };
 
   return (
-    <article className="bg-white border border-neutral-200 rounded-3xl overflow-hidden shadow-sm">
+    <article className="bg-white border border-neutral-200 rounded-3xl overflow-hidden shadow">
       <div className="flex items-center justify-between p-4">
         <div className="flex items-center gap-3">
           <div className="w-9 h-9 rounded-full bg-gradient-to-br from-pink-500 to-purple-600 text-white flex items-center justify-center font-semibold">{(author?.username?.[0]||'?').toUpperCase()}</div>
@@ -301,7 +439,7 @@ function PostCard({ post, author, isAuthed, currentUserId, onAddComment, onReact
             <div className="text-xs text-neutral-500">{timeAgo(post.createdAt)}</div>
           </div>
         </div>
-        {isOwner && (
+        {(isOwner) && (
           <div className="flex items-center gap-2 text-xs">
             {!editing && <button className="px-2 py-1 rounded-lg border border-neutral-300 hover:bg-neutral-50" onClick={()=>setEditing(true)}>Edit</button>}
             {editing && (<><button className="px-2 py-1 rounded-lg border border-neutral-300 hover:bg-neutral-50" onClick={()=>{setEditing(false); setCaptionDraft(post.caption);}}>Cancel</button><button className="px-2 py-1 rounded-lg bg-neutral-900 text-white" onClick={saveCaption}>Save</button></>)}
@@ -353,7 +491,7 @@ function PostCard({ post, author, isAuthed, currentUserId, onAddComment, onReact
             {hidden>0 && !expanded && <button className="text-sm text-neutral-600 hover:underline" onClick={()=>setExpanded(true)}>Show more comments ({hidden})</button>}
             <div className="mt-2 grid gap-3">
               {shown.map(c=> (
-                <CommentBlock key={c.id} c={c} user={getUser(c.userId)} />
+                <CommentBlock key={c.id} c={c} user={{ id:c.userId, username:c.userId }} />
               ))}
             </div>
             {expanded && hidden>0 && <button className="mt-2 text-sm text-neutral-600 hover:underline" onClick={()=>setExpanded(false)}>Show less</button>}
@@ -369,7 +507,68 @@ function PostCard({ post, author, isAuthed, currentUserId, onAddComment, onReact
   );
 }
 
+function RightRail(){
+  const users = [ 'alice', 'bob', 'charlie', 'diana', 'eric' ];
+  return (
+    <div className="sticky top-20">
+      <div className="bg-white border border-neutral-200 rounded-3xl p-3 shadow">
+        <h3 className="font-semibold text-sm mb-2">Suggested for you</h3>
+        <div className="grid gap-2">
+          {users.map(u=> (
+            <div key={u} className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-full bg-gradient-to-br from-pink-500 to-purple-600 text-white flex items-center justify-center text-xs font-bold">{u[0].toUpperCase()}</div>
+                <div className="text-sm">{u}</div>
+              </div>
+              <button className="text-xs px-2 py-1 rounded-lg border border-neutral-300 hover:bg-neutral-50">Follow</button>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FeedSkeleton(){
+  return (
+    <div className="grid gap-6">
+      {[0,1,2].map(i=> (
+        <div key={i} className="bg-white border border-neutral-200 rounded-3xl overflow-hidden shadow">
+          <div className="p-4 flex items-center gap-3">
+            <div className="w-9 h-9 rounded-full bg-neutral-200" />
+            <div className="h-3 w-24 bg-neutral-200 rounded" />
+          </div>
+          <div className="w-full" style={{paddingTop:'100%'}}>
+            <div className="absolute inset-0 bg-neutral-200" />
+          </div>
+          <div className="p-4">
+            <div className="h-3 w-3/4 bg-neutral-200 rounded mb-2" />
+            <div className="h-3 w-2/4 bg-neutral-200 rounded" />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function MobileTabbar({ isAuthed }:{ isAuthed:boolean }){
+  return (
+    <nav className="fixed bottom-0 inset-x-0 z-30 border-t border-neutral-200 bg-white/90 backdrop-blur md:hidden">
+      <div className="max-w-2xl mx-auto px-6 py-2 flex items-center justify-between text-neutral-700">
+        <a href="#/home" aria-label="Home" className="p-2"><HomeIcon/></a>
+        <a href="#/new" aria-label="New" className={classNames('p-2 rounded-full', isAuthed? '':'opacity-50 pointer-events-none')}><AddIcon/></a>
+        <button aria-label="Activity" className="p-2 opacity-60"><HeartIcon/></button>
+        <button aria-label="Profile" className="p-2 opacity-60"><UserIcon/></button>
+      </div>
+    </nav>
+  );
+}
+
+function HomeIcon(){return (<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 9l9-7 9 7"/><path d="M9 22V12h6v10"/></svg>);} 
+function AddIcon(){return (<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>);} 
+function HeartIcon(){return (<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.6l-1-1a5.5 5.5 0 0 0-7.8 7.8l1 1L12 21l7.8-7.6 1-1a5.5 5.5 0 0 0 0-7.8z"/></svg>);} 
+function UserIcon(){return (<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21a8 8 0 0 0-16 0"/><circle cx="12" cy="7" r="4"/></svg>);} 
+
 function Footer() { return <footer className="text-center text-xs text-neutral-400 py-6">InstaFacts</footer>; }
 
 export default App;
-
