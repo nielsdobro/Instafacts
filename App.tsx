@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+﻿import React, { useEffect, useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 
 type Comment = { id: string; userId: string; content: string; createdAt: number; replies: Comment[]; likesUp: string[]; likesDown: string[]; edited?: boolean; };
@@ -26,7 +26,8 @@ type DataLayer = {
   listPosts(): Promise<Post[]>;
   getProfile(id:string): Promise<Profile | null>;
   updateProfile(p:{ username: string; bio?: string }): Promise<void>;
-  addComment(p:{ postId:string, content:string }): Promise<void>;\n  addReply?(p:{ postId:string, commentId:string, content:string }): Promise<void>;
+  addComment(p:{ postId:string, content:string }): Promise<void>;
+  addReply?(p:{ postId:string, commentId:string, content:string }): Promise<void>;
   updatePost(p:{ postId:string, caption:string }): Promise<void>;
   deletePost(p:{ postId:string }): Promise<void>;
   toggleReactPost(p:{ postId:string, type:'up'|'down' }): Promise<void>;
@@ -791,8 +792,8 @@ function PostCard({ post, getUser, isAuthed, currentUserId, onAddComment, onReac
           )}
           {mediaCount > 1 && (
             <>
-              <button onClick={() => setSlide((slide - 1 + mediaCount) % mediaCount)} className="absolute left-2 top-1/2 -translate-y-1/2 bg-white/70 rounded-full px-2 py-1" aria-label="Previous slide">‹</button>
-              <button onClick={() => setSlide((slide + 1) % mediaCount)} className="absolute right-2 top-1/2 -translate-y-1/2 bg-white/70 rounded-full px-2 py-1" aria-label="Next slide">›</button>
+              <button onClick={() => setSlide((slide - 1 + mediaCount) % mediaCount)} className="absolute left-2 top-1/2 -translate-y-1/2 bg-white/70 rounded-full px-2 py-1" aria-label="Previous slide">â€¹</button>
+              <button onClick={() => setSlide((slide + 1) % mediaCount)} className="absolute right-2 top-1/2 -translate-y-1/2 bg-white/70 rounded-full px-2 py-1" aria-label="Next slide">â€º</button>
             </>
           )}
         </div>
@@ -902,7 +903,7 @@ function ProfileEditor({ loadProfile, onSave }:{ loadProfile: ()=>Promise<Profil
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
   useEffect(()=>{ (async()=>{ try { const p = await loadProfile(); if(p){ setUsername(p.username||''); setBio(p.bio||''); } } finally { setLoading(false);} })(); },[loadProfile]);
-  if (loading) return <div className="bg-white border border-neutral-200 rounded-3xl p-4 shadow">Loading profile…</div>;
+  if (loading) return <div className="bg-white border border-neutral-200 rounded-3xl p-4 shadow">Loading profileâ€¦</div>;
   const submit = ()=>{ setErr(''); if(!username.trim()) { setErr('Username is required'); return; } onSave({ username: username.trim(), bio: bio||'' }); };
   return (
     <div className="bg-white border border-neutral-200 rounded-3xl p-4 shadow">
@@ -927,6 +928,7 @@ function ProfileEditor({ loadProfile, onSave }:{ loadProfile: ()=>Promise<Profil
 function Footer() { return <footer className="text-center text-xs text-neutral-400 py-6">InstaFacts</footer>; }
 
 export default App;
+
 
 
 
