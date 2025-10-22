@@ -12,7 +12,7 @@ function useToast(){ const [toast, setToast] = useState<string|null>(null); cons
 function Toast({ msg }:{ msg:string }){ return <div className="fixed top-3 left-1/2 -translate-x-1/2 bg-neutral-900 text-white px-4 py-2 rounded-xl shadow z-50">{msg}</div>; }
 
 // Bump this each time App.tsx changes (for cache-busting on Vercel)
-const APP_VERSION = 'v0.6';
+const APP_VERSION = 'v0.8';
 
 type Profile = { id: string; username: string; bio?: string; email?: string };
 
@@ -26,7 +26,7 @@ type DataLayer = {
   listPosts(): Promise<Post[]>;
   getProfile(id:string): Promise<Profile | null>;
   updateProfile(p:{ username: string; bio?: string }): Promise<void>;
-  addComment(p:{ postId:string, content:string }): Promise<void>;
+  addComment(p:{ postId:string, content:string }): Promise<void>;\n  addReply?(p:{ postId:string, commentId:string, content:string }): Promise<void>;
   updatePost(p:{ postId:string, caption:string }): Promise<void>;
   deletePost(p:{ postId:string }): Promise<void>;
   toggleReactPost(p:{ postId:string, type:'up'|'down' }): Promise<void>;
@@ -249,6 +249,7 @@ function createLocalLayer(): DataLayer{
   };
 
   const onAddComment = async (postId:string, content:string)=>{ try { await data?.addComment({ postId, content }); refresh(); } catch(e:any){ showToast('Failed to add comment'); } };
+  const onAddReply = async (postId:string, commentId:string, content:string)=>{ try { await (data as any)?.addReply?.({ postId, commentId, content }); refresh(); } catch(e:any){ showToast('Failed to add reply'); } };
   const onEditPost   = async (postId:string, caption:string)=>{ try { await data?.updatePost({ postId, caption }); refresh(); } catch(e:any){ showToast('Failed to update'); } };
   const onDeletePost = async (postId:string)=>{ try { await data?.deletePost({ postId }); refresh(); } catch(e:any){ showToast('Failed to delete'); } };
   const onReactPost  = async (postId:string, type:'up'|'down')=>{ try { await data?.toggleReactPost({ postId, type }); refresh(); } catch(e:any){ showToast('Failed to react'); } };
@@ -296,7 +297,7 @@ const onCreatePost = async (files: File[], caption: string) => {
                 <AdminPanel posts={posts} onDeleteAll={deleteAllByUser} />
               )}
               {loading ? <FeedSkeleton /> : (
-                <HomeFeed posts={posts} getUser={(id)=>data?.getProfile(id)}
+                <HomeFeed posts={posts} getUser={(id)=>data?.getProfile(id)} onAddReply={onAddReply}
                   onAddComment={onAddComment} onReactPost={onReactPost}
                   isAuthed={isAuthed} currentUserId={data?.currentUser?.id||''}
                   onEditPost={onEditPost} onDeletePost={onDeletePost}
@@ -439,8 +440,28 @@ function LoginCard({ onSignIn, onSignUp }:{ onSignIn:(p:{identifier:string,passw
 }function NewPost({ onCreate }:{ onCreate:(files: File[], caption: string)=>void }){
   const [files, setFiles] = useState<File[]>([]);
   const [caption, setCaption] = useState('');
-  const onPick = (e: React.ChangeEvent<HTMLInputElement>)=>{ const list = e.target.files; if(!list) return; setFiles(Array.from(list)); };
+  const [dragActive, setDragActive] = useState(false);
+  const [cropIndex, setCropIndex] = useState<number|null>(null);
+
+  const addFiles = (list: FileList | File[] | null) => {
+    if (!list) return;
+    const arr = Array.from(list).filter(f=> f.type.startsWith('image') || f.type.startsWith('video'));
+    if (!arr.length) return;
+    setFiles(prev => [...prev, ...arr].slice(0, 9));
+  };
+
+  const onPick = (e: React.ChangeEvent<HTMLInputElement>)=>{ addFiles(e.target.files); e.currentTarget.value=''; };
+  const onDrop = (e: React.DragEvent) => { e.preventDefault(); e.stopPropagation(); setDragActive(false); addFiles(e.dataTransfer?.files||null); };
+  const onDrag = (e: React.DragEvent) => { e.preventDefault(); e.stopPropagation(); if (e.type==='dragover') setDragActive(true); if(e.type==='dragleave') setDragActive(false); };
+  const removeAt = (idx:number)=> setFiles(prev => prev.filter((_,i)=>i!==idx));
+  const openCrop = (idx:number)=> setCropIndex(idx);
+  const closeCrop = ()=> setCropIndex(null);
+  const saveCrop = (cropped: File)=>{ if(cropIndex==null) return; setFiles(prev=> prev.map((f,i)=> i===cropIndex? cropped : f)); setCropIndex(null); };
+
   const submit = ()=>{ if (!files.length && !caption.trim()) return; onCreate(files, caption.trim()); };
+
+  const inputRef = useRef<HTMLInputElement>(null);
+
   return (
     <div className="bg-white border border-neutral-200 rounded-3xl p-4 shadow">
       <div className="flex items-center justify-between mb-3">
@@ -448,18 +469,154 @@ function LoginCard({ onSignIn, onSignUp }:{ onSignIn:(p:{identifier:string,passw
         <a href="#/home" className="text-sm text-neutral-500 hover:underline">Cancel</a>
       </div>
       <div className="grid gap-3">
-        <input type="file" accept="image/*,video/*" multiple onChange={onPick} className="block w-full text-sm" />
+        <div
+          onDragOver={onDrag}
+          onDragLeave={onDrag}
+          onDrop={onDrop}
+          className={classNames(
+            'rounded-2xl border-2 border-dashed px-4 py-10 text-center cursor-pointer transition',
+            dragActive? 'border-neutral-600 bg-neutral-50':'border-neutral-300 hover:bg-neutral-50'
+          )}
+          onClick={()=> inputRef.current?.click()}
+        >
+          <div className="flex flex-col items-center gap-2">
+            <div className="w-10 h-10 rounded-full bg-neutral-900 text-white flex items-center justify-center">+
+            </div>
+            <div className="text-sm text-neutral-700">Drag & drop images/videos here</div>
+            <div className="text-xs text-neutral-500">or click to browse</div>
+            <div className="text-[11px] text-neutral-400 mt-1">Up to 9 items. Images can be cropped to square.</div>
+          </div>
+          <input ref={inputRef} type="file" accept="image/*,video/*" multiple onChange={onPick} className="hidden" />
+        </div>
+
         {!!files.length && (
           <div className="grid grid-cols-3 gap-2">
             {files.slice(0,9).map((f, i)=> (
-              <div key={i} className="aspect-square bg-neutral-200 rounded-lg overflow-hidden">
+              <div key={i} className="relative aspect-square bg-neutral-200 rounded-lg overflow-hidden group">
                 <Preview file={f} />
+                <div className="absolute top-1 right-1 flex gap-1 opacity-0 group-hover:opacity-100 transition">
+                  <button onClick={()=>removeAt(i)} title="Remove" className="px-2 py-1 rounded-md bg-white/90 text-xs border border-neutral-300">Remove</button>
+                </div>
+                {f.type.startsWith('image') && (
+                  <div className="absolute bottom-1 right-1 opacity-0 group-hover:opacity-100 transition">
+                    <button onClick={()=>openCrop(i)} className="px-2 py-1 rounded-md bg-white/90 text-xs border border-neutral-300">Crop</button>
+                  </div>
+                )}
               </div>
             ))}
           </div>
         )}
+
         <textarea className="w-full border border-neutral-300 rounded-xl px-3 py-2 text-sm" rows={3} placeholder="Write a caption..." value={caption} onChange={e=>setCaption(e.target.value)} />
         <button onClick={submit} disabled={!files.length && !caption.trim()} className={classNames('px-4 py-2 rounded-xl text-sm', (!files.length && !caption.trim())? 'bg-neutral-200 text-neutral-500':'bg-neutral-900 text-white')}>Share</button>
+      </div>
+
+      {cropIndex!=null && files[cropIndex] && files[cropIndex].type.startsWith('image') && (
+        <ImageCropperModal file={files[cropIndex]} onCancel={closeCrop} onSave={saveCrop} />
+      )}
+    </div>
+  );
+}
+
+function ImageCropperModal({ file, onCancel, onSave }:{ file: File; onCancel:()=>void; onSave:(f:File)=>void }){
+  const [url,setUrl] = useState<string>('');
+  const [img,setImg] = useState<HTMLImageElement|null>(null);
+  const [scale,setScale] = useState(1);
+  const [pos,setPos] = useState({ x:0, y:0 });
+  const [dragging,setDragging] = useState<null|{x:number;y:number}>(null);
+  const frameRef = useRef<HTMLDivElement>(null);
+
+  useEffect(()=>{ const u = URL.createObjectURL(file); setUrl(u); return ()=>URL.revokeObjectURL(u); },[file]);
+  useEffect(()=>{ if(!url) return; const i=new Image(); i.onload=()=>setImg(i); i.src=url; },[url]);
+
+  const startDrag = (e: React.MouseEvent)=>{ setDragging({ x:e.clientX - pos.x, y:e.clientY - pos.y }); };
+  const onMove = (e: React.MouseEvent)=>{ if(!dragging) return; setPos({ x: e.clientX - dragging.x, y: e.clientY - dragging.y }); };
+  const endDrag = ()=> setDragging(null);
+
+  const clampPosition = (posIn:{x:number;y:number}, frameSize:number) => {
+    if (!img) return posIn;
+    const iw = img.naturalWidth * scale;
+    const ih = img.naturalHeight * scale;
+    let x = posIn.x, y = posIn.y;
+    const minX = Math.min(0, frameSize - iw);
+    const maxX = Math.max(0, 0);
+    const minY = Math.min(0, frameSize - ih);
+    const maxY = Math.max(0, 0);
+    x = Math.max(minX, Math.min(maxX, x));
+    y = Math.max(minY, Math.min(maxY, y));
+    return { x, y };
+  };
+
+  useEffect(()=>{
+    if(!img || !frameRef.current) return;
+    const size = frameRef.current.clientWidth;
+    const iw = img.naturalWidth * scale;
+    const ih = img.naturalHeight * scale;
+    setPos(clampPosition({ x:(size - iw)/2, y:(size - ih)/2 }, size));
+  }, [img]);
+
+  useEffect(()=>{
+    if(!frameRef.current) return;
+    setPos(p=> clampPosition(p, frameRef.current!.clientWidth));
+  }, [scale]);
+
+  const doSave = async () => {
+    if (!img || !frameRef.current) return;
+    const size = frameRef.current.clientWidth;
+    const canvas = document.createElement('canvas');
+    const outSize = 1080;
+    canvas.width = outSize; canvas.height = outSize;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const sx = -pos.x / scale;
+    const sy = -pos.y / scale;
+    const sWidth = size / scale;
+    const sHeight = size / scale;
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0,0,outSize,outSize);
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(img, sx, sy, sWidth, sHeight, 0, 0, outSize, outSize);
+    canvas.toBlob((blob)=>{
+      if(!blob) return;
+      const name = (file.name?.replace(/\.[^.]+$/, '')||'image') + '-cropped.jpg';
+      const cropped = new File([blob], name, { type:'image/jpeg' });
+      onSave(cropped);
+    }, 'image/jpeg', 0.9);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg p-4">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="font-semibold">Crop to square</h3>
+          <button onClick={onCancel} className="text-sm text-neutral-600 hover:underline">Cancel</button>
+        </div>
+        <div
+          ref={frameRef}
+          className="relative w-full" style={{ paddingTop:'100%' }}
+        >
+          <div
+            className="absolute inset-0 bg-neutral-900 overflow-hidden cursor-grab active:cursor-grabbing"
+            onMouseDown={startDrag}
+            onMouseMove={onMove}
+            onMouseUp={endDrag}
+            onMouseLeave={endDrag}
+          >
+            {!!img && (
+              <img
+                src={url}
+                alt="Crop"
+                draggable={false}
+                style={{ position:'absolute', left: pos.x, top: pos.y, width: img.naturalWidth*scale, height: img.naturalHeight*scale, userSelect:'none' }}
+              />
+            )}
+          </div>
+        </div>
+        <div className="mt-4 flex items-center gap-3">
+          <label className="text-xs text-neutral-600">Zoom</label>
+          <input type="range" min={0.5} max={3} step={0.01} value={scale} onChange={e=>setScale(parseFloat(e.target.value))} className="flex-1" />
+          <button onClick={doSave} className="px-3 py-2 rounded-xl bg-neutral-900 text-white text-sm">Save</button>
+        </div>
       </div>
     </div>
   );
@@ -488,10 +645,11 @@ function AdminPanel({ posts, onDeleteAll }:{ posts:Post[], onDeleteAll:(userId:s
   );
 }
 
-function HomeFeed({ posts, getUser, onAddComment, onReactPost, isAuthed, currentUserId, onEditPost, onDeletePost }:{
+function HomeFeed({ posts, getUser, onAddComment, onAddReply, onReactPost, isAuthed, currentUserId, onEditPost, onDeletePost }:{
   posts: Post[];
   getUser: (id:string)=>any;
   onAddComment: (postId:string, content:string)=>void;
+  onAddReply: (postId:string, commentId:string, content:string)=>void;
   onReactPost: (postId:string, type:'up'|'down')=>void;
   isAuthed: boolean;
   currentUserId: string;
@@ -505,6 +663,7 @@ function HomeFeed({ posts, getUser, onAddComment, onReactPost, isAuthed, current
         <PostCard key={p.id} post={p} getUser={getUser}
           isAuthed={isAuthed} currentUserId={currentUserId}
           onAddComment={onAddComment}
+          onAddReply={onAddReply}
           onReactPost={onReactPost}
           onEditPost={onEditPost}
           onDeletePost={onDeletePost}
@@ -532,7 +691,10 @@ function PostReactionsOverlay({ upActive, downActive, onUp, onDown, disabled }:{
 function ThumbUpIcon(){return (<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 9V5a3 3 0 0 0-3-3l-3 8v10h9a3 3 0 0 0 3-3v-4a3 3 0 0 0-3-3h-3z"/></svg>);} 
 function ThumbDownIcon(){return (<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10 15v4a3 3 0 0 0 3 3l3-8V4H7a3 3 0 0 0-3 3v4a3 3 0 0 0 3 3h3z"/></svg>);} 
 
-function CommentBlock({ c, user }:{ c: Comment, user:{ id:string, username:string } }){
+function CommentBlock({ c, user, postId, onAddReply, isAuthed }:{ c: Comment, user:{ id:string, username:string }, postId:string, onAddReply?:(postId:string, commentId:string, content:string)=>void, isAuthed:boolean }){
+  const [replyOpen, setReplyOpen] = useState(false);
+  const [reply, setReply] = useState('');
+  const submitReply = ()=>{ if(!onAddReply || !isAuthed) return; if(!reply.trim()) return; onAddReply(postId, c.id, reply.trim()); setReply(''); setReplyOpen(false); };
   return (
     <div className="flex items-start gap-2 bg-neutral-100 rounded-xl p-3">
       <div className="w-8 h-8 rounded-full bg-gradient-to-br from-pink-500 to-purple-600 text-white flex items-center justify-center text-xs font-bold">
@@ -545,6 +707,15 @@ function CommentBlock({ c, user }:{ c: Comment, user:{ id:string, username:strin
           <span className="text-xs text-neutral-400 ml-auto">{new Date(c.createdAt).toLocaleString()}</span>
         </div>
         <div className="text-sm mt-1 whitespace-pre-wrap break-words">{c.content}</div>
+        <div className="mt-2 text-xs flex items-center gap-3">
+          <button className="text-neutral-600 hover:underline disabled:opacity-50" disabled={!isAuthed} onClick={()=>setReplyOpen(v=>!v)}>Reply</button>
+        </div>
+        {replyOpen && (
+          <div className="mt-2 flex items-center gap-2">
+            <input value={reply} onChange={e=>setReply(e.target.value)} onKeyDown={e=>{ if((e.ctrlKey||e.metaKey) && e.key==='Enter') { e.preventDefault(); submitReply(); } }} placeholder="Write a reply" className="flex-1 border border-neutral-300 rounded-xl px-3 py-2 text-sm"/>
+            <button onClick={submitReply} disabled={!reply.trim()} className={classNames('px-2 py-1 rounded-lg text-xs', !reply.trim()? 'bg-neutral-200 text-neutral-500':'bg-neutral-900 text-white')}>Post</button>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -756,6 +927,9 @@ function ProfileEditor({ loadProfile, onSave }:{ loadProfile: ()=>Promise<Profil
 function Footer() { return <footer className="text-center text-xs text-neutral-400 py-6">InstaFacts</footer>; }
 
 export default App;
+
+
+
 
 
 
