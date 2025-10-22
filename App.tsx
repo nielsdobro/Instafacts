@@ -281,7 +281,21 @@ function createLocalLayer(): DataLayer{
   const isAuthed = !!data?.currentUser;
   const isAdmin = !!data?.isAdmin;
 
-  async function refresh(){ if(!data) return; try { setLoading(true); const list = await data.listPosts(); setPosts(list); } catch(e:any){ showToast('Failed to load posts'); } finally { setLoading(false);} }
+  async function refresh(){
+    if(!data) return;
+    try {
+      setLoading(true);
+      if (data.isAdmin) {
+        try { await importFromCsvIfChanged(false); } catch {}
+      }
+      const list = await data.listPosts();
+      setPosts(list);
+    } catch(e:any){
+      showToast('Failed to load posts');
+    } finally {
+      setLoading(false);
+    }
+  }
 
   const niceAuthError = (e:any) => { const m = String(e?.message || e || '').toLowerCase(); if (m.includes('invalid login') || m.includes('invalid email') || m.includes('invalid credentials')) return 'Invalid email/username or password.'; if (m.includes('registered') || m.includes('already exists')) return 'Email already in use. Please sign in.'; if (m.includes('confirm')) return 'Check your email to confirm your account, then sign in.'; return e?.message || 'Authentication failed.'; };
   const doSignIn = async ({ identifier, password }:{ identifier:string, password:string })=>{ try { await data?.signIn({ identifier, password }); window.location.hash = '#/profile'; refresh(); } catch(e:any){ showToast(niceAuthError(e)); } };
@@ -321,7 +335,7 @@ const onCreatePost = async (files: File[], caption: string) => {
   }
 };
 
-  // CSV auto-import: fetch first row (4 image URLs + caption) and post when it changes
+  // CSV import helpers
   function parseCSVLine(line:string){
     const out:string[] = []; let cur=''; let q=false;
     for(let i=0;i<line.length;i++){
@@ -345,38 +359,28 @@ const onCreatePost = async (files: File[], caption: string) => {
   }
   const csvHashKey = 'instafacts_csv_top_hash';
   const importRef = useRef(false);
-  useEffect(()=>{
-    let timer:number|undefined; let cancelled=false;
-    const shouldRun = !!data?.isAdmin; // only admins auto-import
-    if(!shouldRun) return;
-    const check = async()=>{
-      if(cancelled || importRef.current) return;
-      try {
-        const res = await fetch(CSV_URL + (CSV_URL.includes('?')?'&':'?') + '_ts=' + Date.now(), { cache:'no-store' });
-        if(!res.ok){ return; }
-        const txt = await res.text();
-        const line = (txt.split(/\r?\n/).find(l=>l.trim().length>0)||'');
-        if(!line) return;
-        const cells = parseCSVLine(line);
-        if(cells.length<5) return;
-        const rowHash = String(cells.join('|'));
-        const lastHash = localStorage.getItem(csvHashKey)||'';
-        if(rowHash === lastHash) return; // no change
-        // Changed: create post
-        importRef.current = true;
-        const urls = cells.slice(0,4).filter(u=>/^https?:/i.test(u));
-        const caption = cells.slice(4).join(',').trim();
-        const files: File[] = [];
-        for(let i=0;i<urls.length;i++){ try{ files.push(await fetchFileFromUrl(urls[i], i)); }catch{} }
-        if(files.length){ await data?.createPost({ files, caption }); localStorage.setItem(csvHashKey, rowHash); refresh(); showToast('Imported from CSV'); }
-      } catch { /* ignore transient errors */ }
-      finally { importRef.current = false; }
-    };
-    // initial + poll every 60s
-    check();
-    timer = window.setInterval(check, 60000);
-    return ()=>{ cancelled=true; if(timer) window.clearInterval(timer); };
-  }, [data?.isAdmin]);
+  const importFromCsvIfChanged = async (force:boolean)=>{
+    if(importRef.current) return;
+    importRef.current = true;
+    try {
+      const res = await fetch(CSV_URL + (CSV_URL.includes('?')?'&':'?') + '_ts=' + Date.now(), { cache:'no-store' });
+      if(!res.ok) return;
+      const txt = await res.text();
+      const line = (txt.split(/\r?\n/).find(l=>l.trim().length>0)||'');
+      if(!line) return;
+      const cells = parseCSVLine(line);
+      if(cells.length<5) return;
+      const rowHash = String(cells.join('|'));
+      const lastHash = localStorage.getItem(csvHashKey)||'';
+      if(!force && rowHash === lastHash) return; // no change
+      const urls = cells.slice(0,4).filter(u=>/^https?:/i.test(u));
+      const caption = cells.slice(4).join(',').trim();
+      const files: File[] = [];
+      for(let i=0;i<urls.length;i++){ try{ files.push(await fetchFileFromUrl(urls[i], i)); }catch{} }
+      if(files.length){ await data?.createPost({ files, caption }); localStorage.setItem(csvHashKey, rowHash); showToast('Imported from CSV'); }
+    } catch {}
+    finally { importRef.current = false; }
+  };
 
 // Derive display name (prefer username)
   useEffect(()=>{ let cancelled=false; (async()=>{
