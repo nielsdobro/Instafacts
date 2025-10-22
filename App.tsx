@@ -31,7 +31,7 @@ function useToast(){ const [toast, setToast] = useState<string|null>(null); cons
 function Toast({ msg }:{ msg:string }){ return <div className="fixed top-3 left-1/2 -translate-x-1/2 bg-neutral-900 text-white px-4 py-2 rounded-xl shadow z-50">{msg}</div>; }
 
 // Bump this each time App.tsx changes (for cache-busting on Vercel)
-const APP_VERSION = 'v0.8';
+const APP_VERSION = 'v0.9';
 
 type Profile = { id: string; username: string; bio?: string; email?: string };
 
@@ -800,12 +800,13 @@ function CommentBlock({ c, user, postId, getUser, onAddReply, isAuthed }:{ c: Co
   </ErrorBoundary>);
 }
 
-function PostCard({ post, getUser, isAuthed, currentUserId, onAddComment, onReactPost, onEditPost, onDeletePost }:{
+function PostCard({ post, getUser, isAuthed, currentUserId, onAddComment, onAddReply, onReactPost, onEditPost, onDeletePost }:{
   post: Post;
   getUser: (id:string)=>any;
   isAuthed: boolean;
   currentUserId: string;
   onAddComment: (postId:string, content:string)=>void;
+  onAddReply: (postId:string, commentId:string, content:string)=>void;
   onReactPost: (postId:string, type:'up'|'down')=>void;
   onEditPost: (postId:string, caption:string)=>void;
   onDeletePost: (postId:string)=>void;
