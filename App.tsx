@@ -523,6 +523,7 @@ function ImageCropperModal({ file, onCancel, onSave }:{ file: File; onCancel:()=
   const [url,setUrl] = useState<string>('');
   const [img,setImg] = useState<HTMLImageElement|null>(null);
   const [scale,setScale] = useState(1);
+  const [minScale,setMinScale] = useState(1);
   const [pos,setPos] = useState({ x:0, y:0 });
   const [dragging,setDragging] = useState<null|{x:number;y:number}>(null);
   const frameRef = useRef<HTMLDivElement>(null);
@@ -530,14 +531,11 @@ function ImageCropperModal({ file, onCancel, onSave }:{ file: File; onCancel:()=
   useEffect(()=>{ const u = URL.createObjectURL(file); setUrl(u); return ()=>URL.revokeObjectURL(u); },[file]);
   useEffect(()=>{ if(!url) return; const i=new Image(); i.onload=()=>setImg(i); i.src=url; },[url]);
 
-  const startDrag = (e: React.MouseEvent)=>{ setDragging({ x:e.clientX - pos.x, y:e.clientY - pos.y }); };
+  const startDrag = (e: React.MouseEvent)=>{ e.preventDefault(); setDragging({ x:e.clientX - pos.x, y:e.clientY - pos.y }); };
   const onMove = (e: React.MouseEvent)=>{ if(!dragging) return; setPos({ x: e.clientX - dragging.x, y: e.clientY - dragging.y }); };
-  const endDrag = ()=> setDragging(null);
+  const endDrag = ()=>{ setDragging(null); if(frameRef.current) setPos(p=> clampPosition(p, frameRef.current!.clientWidth)); };
 
-  const clampPosition = (posIn:{x:number;y:number}, frameSize:number) => {
-    if (!img) return posIn;
-    const iw = img.naturalWidth * scale;
-    const ih = img.naturalHeight * scale;
+  const clampPosition = (posIn:{x:number;y:number}, frameSize:number, s:number = scale) => { if (!img) return posIn; const iw = img.naturalWidth * s; const ih = img.naturalHeight * s;
     let x = posIn.x, y = posIn.y;
     const minX = Math.min(0, frameSize - iw);
     const maxX = Math.max(0, 0);
@@ -547,15 +545,31 @@ function ImageCropperModal({ file, onCancel, onSave }:{ file: File; onCancel:()=
     y = Math.max(minY, Math.min(maxY, y));
     return { x, y };
   };
+  const setScaleKeepingCenter = (next:number) => {
+    if (!frameRef.current || !img) { setScale(next); return; }
+    const size = frameRef.current.clientWidth;
+    const newScale = Math.max(next, minScale);
+    const cx = size/2; const cy = size/2;
+    const imgCx = (cx - pos.x) / scale;
+    const imgCy = (cy - pos.y) / scale;
+    let nx = cx - imgCx * newScale;
+    let ny = cy - imgCy * newScale;
+    const clamped = clampPosition({ x:nx, y:ny }, size, newScale);
+    setScale(newScale);
+    setPos(clamped);
+  };
 
   useEffect(()=>{
     if(!img || !frameRef.current) return;
     const size = frameRef.current.clientWidth;
-    const iw = img.naturalWidth * scale;
-    const ih = img.naturalHeight * scale;
-    setPos(clampPosition({ x:(size - iw)/2, y:(size - ih)/2 }, size));
+    const minS = Math.max(size / img.naturalWidth, size / img.naturalHeight);
+    setMinScale(minS);
+    const useScale = Math.max(scale, minS);
+    if (scale < minS) setScale(minS);
+    const iw = img.naturalWidth * useScale;
+    const ih = img.naturalHeight * useScale;
+    setPos(clampPosition({ x:(size - iw)/2, y:(size - ih)/2 }, size, useScale));
   }, [img]);
-
   useEffect(()=>{
     if(!frameRef.current) return;
     setPos(p=> clampPosition(p, frameRef.current!.clientWidth));
@@ -615,7 +629,7 @@ function ImageCropperModal({ file, onCancel, onSave }:{ file: File; onCancel:()=
         </div>
         <div className="mt-4 flex items-center gap-3">
           <label className="text-xs text-neutral-600">Zoom</label>
-          <input type="range" min={0.5} max={3} step={0.01} value={scale} onChange={e=>setScale(parseFloat(e.target.value))} className="flex-1" />
+          <input type="range" min={minScale} max={Math.max(minScale, 3)} step={0.01} value={scale} onChange={e=>setScaleKeepingCenter(parseFloat(e.target.value))} className="flex-1" />
           <button onClick={doSave} className="px-3 py-2 rounded-xl bg-neutral-900 text-white text-sm">Save</button>
         </div>
       </div>
@@ -773,7 +787,7 @@ function PostCard({ post, getUser, isAuthed, currentUserId, onAddComment, onReac
       </div>
 
       <div className="relative w-full" style={{ paddingTop:'100%' }}>
-        <div className="absolute inset-0 bg-black">
+          <div className="absolute inset-0 bg-black" tabIndex={0} onKeyDown={(e)=>{ if(e.key==="ArrowLeft"){ e.preventDefault(); setSlide((slide - 1 + mediaCount) % mediaCount); } if(e.key==="ArrowRight"){ e.preventDefault(); setSlide((slide + 1) % mediaCount); } }}>
           {!media_urls[slide] || mediaError ? (
             <div className="w-full h-full flex items-center justify-center bg-neutral-200 text-neutral-500">
               No media
@@ -792,8 +806,8 @@ function PostCard({ post, getUser, isAuthed, currentUserId, onAddComment, onReac
           )}
           {mediaCount > 1 && (
             <>
-              <button onClick={() => setSlide((slide - 1 + mediaCount) % mediaCount)} className="absolute left-2 top-1/2 -translate-y-1/2 bg-white/70 rounded-full px-2 py-1" aria-label="Previous slide">â€¹</button>
-              <button onClick={() => setSlide((slide + 1) % mediaCount)} className="absolute right-2 top-1/2 -translate-y-1/2 bg-white/70 rounded-full px-2 py-1" aria-label="Next slide">â€º</button>
+              <button onClick={() => setSlide((slide - 1 + mediaCount) % mediaCount)} className="absolute left-2 top-1/2 -translate-y-1/2 p-2 rounded-full bg-white/80 text-neutral-900 shadow hover:bg-white focus:outline-none focus:ring-2 focus:ring-neutral-400" aria-label="Previous slide"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg></button>
+              <button onClick={() => setSlide((slide + 1) % mediaCount)} className="absolute right-2 top-1/2 -translate-y-1/2 p-2 rounded-full bg-white/80 text-neutral-900 shadow hover:bg-white focus:outline-none focus:ring-2 focus:ring-neutral-400" aria-label="Next slide"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg></button>
             </>
           )}
         </div>
@@ -928,6 +942,9 @@ function ProfileEditor({ loadProfile, onSave }:{ loadProfile: ()=>Promise<Profil
 function Footer() { return <footer className="text-center text-xs text-neutral-400 py-6">InstaFacts</footer>; }
 
 export default App;
+
+
+
 
 
 
