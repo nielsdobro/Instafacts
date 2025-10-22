@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useRef, useState, useLayoutEffect } from "react";
+﻿import React, { useEffect, useRef, useState, useLayoutEffect, useMemo } from "react";
 import { createClient } from "@supabase/supabase-js";
 
 class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { error: Error | null }>{
@@ -699,8 +699,9 @@ function Preview({ file }:{ file: File }){
 }
 
 function AdminPanel({ posts, onDeleteAll }:{ posts:Post[], onDeleteAll:(userId:string)=>void }){
-  const users = Array.from(new Set(posts.map(p=>p.userId));
-  const [target, setTarget] = useState(users[0]||'');
+  const users = useMemo(() => Array.from(new Set((posts||[]).map(p=>p.userId))), [posts]);
+  const [target, setTarget] = useState<string>(()=>users[0]||'');
+  useEffect(()=>{ if(!users.includes(target)) setTarget(users[0]||''); }, [users]);
   return (<ErrorBoundary>
     <div className="mt-4 mb-2 p-3 border border-red-300 rounded-xl bg-red-50 text-sm">
       <div className="flex items-center gap-2">
@@ -1005,6 +1006,7 @@ function ProfileEditor({ loadProfile, onSave }:{ loadProfile: ()=>Promise<Profil
 function Footer() { return <footer className="text-center text-xs text-neutral-400 py-6">InstaFacts</footer>; }
 
 export default App;
+
 
 
 
