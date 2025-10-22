@@ -31,7 +31,8 @@ function useToast(){ const [toast, setToast] = useState<string|null>(null); cons
 function Toast({ msg }:{ msg:string }){ return <div className="fixed top-3 left-1/2 -translate-x-1/2 bg-neutral-900 text-white px-4 py-2 rounded-xl shadow z-50">{msg}</div>; }
 
 // Bump this each time App.tsx changes (for cache-busting on Vercel)
-const APP_VERSION = 'v0.9';
+const APP_VERSION = 'v1.0';
+const CSV_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vQc1EVO1dFWIma7UludbVlUJzqPhpvph_2tCelMfHu3P5SBgcnOAfi8c2gzwnqi8eDyNcXN3-sFeCgp/pub?output=csv';
 
 type Profile = { id: string; username: string; bio?: string; email?: string };
 
@@ -319,6 +320,63 @@ const onCreatePost = async (files: File[], caption: string) => {
     showToast(e.message || 'Failed to post');
   }
 };
+
+  // CSV auto-import: fetch first row (4 image URLs + caption) and post when it changes
+  function parseCSVLine(line:string){
+    const out:string[] = []; let cur=''; let q=false;
+    for(let i=0;i<line.length;i++){
+      const ch=line[i];
+      if(ch==='"'){
+        if(q && line[i+1]==='"'){ cur+='"'; i++; }
+        else { q=!q; }
+      } else if(ch===',' && !q){ out.push(cur); cur=''; }
+      else { cur+=ch; }
+    }
+    out.push(cur);
+    return out.map(s=>s.trim());
+  }
+  async function fetchFileFromUrl(url:string, idx:number){
+    const r = await fetch(url, { cache:'no-store' });
+    if(!r.ok) throw new Error('Failed to fetch image');
+    const b = await r.blob();
+    const guessExt = (()=>{ try { const u=new URL(url); const p=u.pathname.split('/').pop()||''; const e=p.split('.').pop()||''; return e.split(/[^a-zA-Z0-9]/)[0]||''; } catch { return ''; } })();
+    const name = `csv_${Date.now()}_${idx}.${guessExt|| (b.type.startsWith('image/')? b.type.split('/')[1]:'bin')}`;
+    return new File([b], name, { type: b.type||'application/octet-stream' });
+  }
+  const csvHashKey = 'instafacts_csv_top_hash';
+  const importRef = useRef(false);
+  useEffect(()=>{
+    let timer:number|undefined; let cancelled=false;
+    const shouldRun = !!data?.isAdmin; // only admins auto-import
+    if(!shouldRun) return;
+    const check = async()=>{
+      if(cancelled || importRef.current) return;
+      try {
+        const res = await fetch(CSV_URL + (CSV_URL.includes('?')?'&':'?') + '_ts=' + Date.now(), { cache:'no-store' });
+        if(!res.ok){ return; }
+        const txt = await res.text();
+        const line = (txt.split(/\r?\n/).find(l=>l.trim().length>0)||'');
+        if(!line) return;
+        const cells = parseCSVLine(line);
+        if(cells.length<5) return;
+        const rowHash = String(cells.join('|'));
+        const lastHash = localStorage.getItem(csvHashKey)||'';
+        if(rowHash === lastHash) return; // no change
+        // Changed: create post
+        importRef.current = true;
+        const urls = cells.slice(0,4).filter(u=>/^https?:/i.test(u));
+        const caption = cells.slice(4).join(',').trim();
+        const files: File[] = [];
+        for(let i=0;i<urls.length;i++){ try{ files.push(await fetchFileFromUrl(urls[i], i)); }catch{} }
+        if(files.length){ await data?.createPost({ files, caption }); localStorage.setItem(csvHashKey, rowHash); refresh(); showToast('Imported from CSV'); }
+      } catch { /* ignore transient errors */ }
+      finally { importRef.current = false; }
+    };
+    // initial + poll every 60s
+    check();
+    timer = window.setInterval(check, 60000);
+    return ()=>{ cancelled=true; if(timer) window.clearInterval(timer); };
+  }, [data?.isAdmin]);
 
 // Derive display name (prefer username)
   useEffect(()=>{ let cancelled=false; (async()=>{

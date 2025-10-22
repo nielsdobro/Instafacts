@@ -4,7 +4,6 @@
   "private": true,
   "description": "InstaFacts - Instagram-style mockup with Supabase + Zapier integration.",
   "scripts": {
-    "prebuild": "node scripts/prebuild-fix.js",
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
