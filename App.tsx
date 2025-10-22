@@ -1,6 +1,25 @@
 ﻿import React, { useEffect, useRef, useState, useLayoutEffect } from "react";
 import { createClient } from "@supabase/supabase-js";
 
+class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { error: Error | null }>{
+  constructor(props:any){ super(props); this.state = { error: null }; }
+  static getDerivedStateFromError(err: Error){ return { error: err }; }
+  componentDidCatch(err:Error){ console.error("[App crashed]", err); }
+  render(){
+    if(this.state.error){
+      return (
+        React.createElement("div", { className: "max-w-2xl mx-auto p-6 text-sm" },
+          React.createElement("h1", { className: "text-lg font-semibold mb-2" }, "Something went wrong"),
+          React.createElement("pre", { className: "p-3 bg-red-50 border border-red-200 rounded" }, String(this.state.error?.message||this.state.error||"Unknown error")), 
+          React.createElement("div", { className: "mt-3 text-xs text-neutral-600" }, "Check the browser console for details."),
+          React.createElement("button", { className: "mt-4 px-3 py-2 rounded bg-neutral-900 text-white", onClick: ()=>{ try { localStorage.clear(); sessionStorage.clear(); } catch {} window.location.reload(); } }, "Clear storage and reload")
+        )
+      );
+    }
+    return this.props.children as any;
+  }
+}
+
 type Comment = { id: string; userId: string; content: string; createdAt: number; replies: Comment[]; likesUp: string[]; likesDown: string[]; edited?: boolean; };
 type Post = { id: string; userId: string; caption: string; createdAt: number; media_urls: string[]; mediaTypes: ("image"|"video")[]; comments: Comment[]; likesUp: string[]; likesDown: string[]; edited?: boolean; };
 
@@ -309,7 +328,7 @@ const onCreatePost = async (files: File[], caption: string) => {
     } else { setDisplayName(undefined); }
   })(); return ()=>{ cancelled=true; }; }, [data?.currentUser?.id]);
 
-  return (
+  return (<ErrorBoundary>
     <div className="min-h-screen bg-neutral-50 text-neutral-900">
       <TopBar currentUserLabel={(displayName || data?.currentUser?.email)} onSignOut={doSignOut} />
       <div className="max-w-5xl mx-auto px-4 pb-24">
@@ -347,13 +366,13 @@ const onCreatePost = async (files: File[], caption: string) => {
       <MobileTabbar isAuthed={isAuthed} />
       <Footer />
     </div>
-  );
+  </ErrorBoundary>);
 }
 
 function parseHash(){ const raw=window.location.hash.replace(/^#\/?/,''); if(!raw) return 'home'; if(['home','login','new','profile'].includes(raw)) return raw; return 'home'; }
 
 function TopBar({ currentUserLabel, onSignOut }:{ currentUserLabel?: string, onSignOut: ()=>void }){
-  return (
+  return (<ErrorBoundary>
     <header className="sticky top-0 z-30 bg-white/80 backdrop-blur border-b border-neutral-200">
       <div className="max-w-5xl mx-auto px-4 py-2.5 flex items-center justify-between">
         <a href="#/home" className="flex items-center gap-2 hover:opacity-90">
@@ -376,11 +395,11 @@ function TopBar({ currentUserLabel, onSignOut }:{ currentUserLabel?: string, onS
         </div>
       </div>
     </header>
-  );
+  </ErrorBoundary>);
 }
 
 function Logo({ size = 28 }:{ size?: number }){
-  return (
+  return (<ErrorBoundary>
     <svg width={size} height={size} viewBox="0 0 100 100" role="img" aria-label="InstaFacts" style={{ display:'block' }}>
       <defs>
         <linearGradient id="igG" x1="0" y1="0" x2="1" y2="1">
@@ -393,7 +412,7 @@ function Logo({ size = 28 }:{ size?: number }){
       <circle cx="45" cy="45" r="18" fill="none" stroke="#fff" strokeWidth="8" />
       <line x1="58" y1="58" x2="75" y2="75" stroke="#fff" strokeWidth="8" strokeLinecap="round" />
     </svg>
-  );
+  </ErrorBoundary>);
 }
 
 function LoginCard({ onSignIn, onSignUp }:{ onSignIn:(p:{identifier:string,password:string})=>void, onSignUp:(p:{email:string,password:string,username?:string,bio?:string})=>void }){
@@ -420,7 +439,7 @@ function LoginCard({ onSignIn, onSignUp }:{ onSignIn:(p:{identifier:string,passw
     onSignUp({ email, password, username, bio });
   };
   const onKeyDown=(e:React.KeyboardEvent)=>{ if(e.key==='Enter'){ e.preventDefault(); submit(); } };
-  return (
+  return (<ErrorBoundary>
     <div className="mt-12 bg-white border border-neutral-200 rounded-3xl p-6 shadow-sm" onKeyDown={onKeyDown}>
       <div className="flex items-center justify-between mb-4">
         <Logo/>
@@ -470,7 +489,7 @@ function LoginCard({ onSignIn, onSignUp }:{ onSignIn:(p:{identifier:string,passw
       )}
       <p className="mt-4 text-xs text-neutral-500">Sign in with your email or username. Usernames are unique.</p>
     </div>
-  );
+  </ErrorBoundary>);
 }function NewPost({ onCreate }:{ onCreate:(files: File[], caption: string)=>void }){
   const [files, setFiles] = useState<File[]>([]);
   const [caption, setCaption] = useState('');
@@ -496,7 +515,7 @@ function LoginCard({ onSignIn, onSignUp }:{ onSignIn:(p:{identifier:string,passw
 
   const inputRef = useRef<HTMLInputElement>(null);
 
-  return (
+  return (<ErrorBoundary>
     <div className="bg-white border border-neutral-200 rounded-3xl p-4 shadow">
       <div className="flex items-center justify-between mb-3">
         <h2 className="font-semibold">Create new post</h2>
@@ -549,7 +568,7 @@ function LoginCard({ onSignIn, onSignUp }:{ onSignIn:(p:{identifier:string,passw
         <ImageCropperModal file={files[cropIndex]} onCancel={closeCrop} onSave={saveCrop} />
       )}
     </div>
-  );
+  </ErrorBoundary>);
 }
 
 function ImageCropperModal({ file, onCancel, onSave }:{ file: File; onCancel:()=>void; onSave:(f:File)=>void }){
@@ -638,7 +657,7 @@ function ImageCropperModal({ file, onCancel, onSave }:{ file: File; onCancel:()=
     }, 'image/jpeg', 0.9);
   };
 
-  return (
+  return (<ErrorBoundary>
     <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
       <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg p-4">
         <div className="flex items-center justify-between mb-3">
@@ -669,7 +688,7 @@ function ImageCropperModal({ file, onCancel, onSave }:{ file: File; onCancel:()=
         </div>
       </div>
     </div>
-  );
+  </ErrorBoundary>);
 }
 
 function Preview({ file }:{ file: File }){
@@ -680,9 +699,9 @@ function Preview({ file }:{ file: File }){
 }
 
 function AdminPanel({ posts, onDeleteAll }:{ posts:Post[], onDeleteAll:(userId:string)=>void }){
-  const users = Array.from(new Set(posts.map(p=>p.userId)));
+  const users = Array.from(new Set(posts.map(p=>p.userId));
   const [target, setTarget] = useState(users[0]||'');
-  return (
+  return (<ErrorBoundary>
     <div className="mt-4 mb-2 p-3 border border-red-300 rounded-xl bg-red-50 text-sm">
       <div className="flex items-center gap-2">
         <strong className="text-red-700">Admin</strong>
@@ -692,7 +711,7 @@ function AdminPanel({ posts, onDeleteAll }:{ posts:Post[], onDeleteAll:(userId:s
         <button className="ml-auto px-3 py-1.5 rounded-lg bg-red-600 text-white" onClick={()=>target && onDeleteAll(target)}>Delete all posts by user</button>
       </div>
     </div>
-  );
+  </ErrorBoundary>);
 }
 
 function HomeFeed({ posts, getUser, onAddComment, onAddReply, onReactPost, isAuthed, currentUserId, onEditPost, onDeletePost }:{
@@ -707,7 +726,7 @@ function HomeFeed({ posts, getUser, onAddComment, onAddReply, onReactPost, isAut
   onDeletePost: (postId:string)=>void;
 }){
   if (!posts.length) return <p className="mt-16 text-center text-neutral-500">No posts yet.</p>;
-  return (
+  return (<ErrorBoundary>
     <div className="grid gap-6 mt-2">
       {posts.map(p=> (
         <PostCard key={p.id} post={p} getUser={getUser}
@@ -720,11 +739,11 @@ function HomeFeed({ posts, getUser, onAddComment, onAddReply, onReactPost, isAut
         />
       ))}
     </div>
-  );
+  </ErrorBoundary>);
 }
 
 function PostReactionsOverlay({ upActive, downActive, onUp, onDown, disabled }:{ upActive:boolean, downActive:boolean, onUp:()=>void, onDown:()=>void, disabled:boolean }){
-  return (
+  return (<ErrorBoundary>
     <div className="absolute bottom-3 right-3 flex items-center gap-2">
       <button disabled={disabled} onClick={onUp} title="Like"
         className={classNames('w-9 h-9 rounded-full shadow-md flex items-center justify-center bg-white transition', disabled? 'opacity-60':'hover:scale-105', upActive&&!disabled&&'ring-2 ring-green-500 text-green-600')}>
@@ -735,7 +754,7 @@ function PostReactionsOverlay({ upActive, downActive, onUp, onDown, disabled }:{
         <ThumbDownIcon/>
       </button>
     </div>
-  );
+  </ErrorBoundary>);
 }
 
 function ThumbUpIcon(){return (<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 9V5a3 3 0 0 0-3-3l-3 8v10h9a3 3 0 0 0 3-3v-4a3 3 0 0 0-3-3h-3z"/></svg>);} 
@@ -747,7 +766,7 @@ function CommentBlock({ c, user, postId, getUser, onAddReply, isAuthed }:{ c: Co
   const [replyOpen, setReplyOpen] = useState(false);
   const [reply, setReply] = useState('');
   const submitReply = ()=>{ if(!onAddReply || !isAuthed) return; if(!reply.trim()) return; onAddReply(postId, c.id, reply.trim()); setReply(''); setReplyOpen(false); };
-  return (
+  return (<ErrorBoundary>
     <div className="flex items-start gap-2 bg-neutral-100 rounded-xl p-3">
       <div className="w-8 h-8 rounded-full bg-gradient-to-br from-pink-500 to-purple-600 text-white flex items-center justify-center text-xs font-bold">
         {author.username[0]?.toUpperCase()||'?'}
@@ -777,7 +796,7 @@ function CommentBlock({ c, user, postId, getUser, onAddReply, isAuthed }:{ c: Co
           </div>
         )}
     </div>
-  );
+  </ErrorBoundary>);
 }
 
 function PostCard({ post, getUser, isAuthed, currentUserId, onAddComment, onReactPost, onEditPost, onDeletePost }:{
@@ -811,7 +830,7 @@ function PostCard({ post, getUser, isAuthed, currentUserId, onAddComment, onReac
   const submitComment = () => { if (!isAuthed) return; if (comment.trim()) { onAddComment(post.id, comment); setComment(''); } };
   const saveCaption = () => { onEditPost(post.id, captionDraft); setEditing(false); };
 
-  return (
+  return (<ErrorBoundary>
     <article className="bg-white border border-neutral-200 rounded-3xl overflow-hidden shadow">
       <div className="flex items-center justify-between p-4">
         <div className="flex items-center gap-3">
@@ -890,12 +909,12 @@ function PostCard({ post, getUser, isAuthed, currentUserId, onAddComment, onReac
         </div>
       </div>
     </article>
-  );
+  </ErrorBoundary>);
 }
 
 function RightRail(){
   const users = [ 'alice', 'bob', 'charlie', 'diana', 'eric' ];
-  return (
+  return (<ErrorBoundary>
     <div className="sticky top-20">
       <div className="bg-white border border-neutral-200 rounded-3xl p-3 shadow">
         <h3 className="font-semibold text-sm mb-2">Suggested for you</h3>
@@ -912,11 +931,11 @@ function RightRail(){
         </div>
       </div>
     </div>
-  );
+  </ErrorBoundary>);
 }
 
 function FeedSkeleton(){
-  return (
+  return (<ErrorBoundary>
     <div className="grid gap-6">
       {[0,1,2].map(i=> (
         <div key={i} className="bg-white border border-neutral-200 rounded-3xl overflow-hidden shadow">
@@ -934,11 +953,11 @@ function FeedSkeleton(){
         </div>
       ))}
     </div>
-  );
+  </ErrorBoundary>);
 }
 
 function MobileTabbar({ isAuthed }:{ isAuthed:boolean }){
-  return (
+  return (<ErrorBoundary>
     <nav className="fixed bottom-0 inset-x-0 z-30 border-t border-neutral-200 bg-white/90 backdrop-blur md:hidden">
       <div className="max-w-2xl mx-auto px-6 py-2 flex items-center justify-between text-neutral-700">
         <a href="#/home" aria-label="Home" className="p-2"><HomeIcon/></a>
@@ -947,7 +966,7 @@ function MobileTabbar({ isAuthed }:{ isAuthed:boolean }){
         <a href="#/profile" aria-label="Profile" className="p-2 opacity-60"><UserIcon/></a>
       </div>
     </nav>
-  );
+  </ErrorBoundary>);
 }
 
 function HomeIcon(){return (<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 9l9-7 9 7"/><path d="M9 22V12h6v10"/></svg>);} 
@@ -963,7 +982,7 @@ function ProfileEditor({ loadProfile, onSave }:{ loadProfile: ()=>Promise<Profil
   useEffect(()=>{ (async()=>{ try { const p = await loadProfile(); if(p){ setUsername(p.username||''); setBio(p.bio||''); } } finally { setLoading(false);} })(); },[loadProfile]);
   if (loading) return <div className="bg-white border border-neutral-200 rounded-3xl p-4 shadow">Loading profileâ€¦</div>;
   const submit = ()=>{ setErr(''); if(!username.trim()) { setErr('Username is required'); return; } onSave({ username: username.trim(), bio: bio||'' }); };
-  return (
+  return (<ErrorBoundary>
     <div className="bg-white border border-neutral-200 rounded-3xl p-4 shadow">
       <h2 className="font-semibold mb-3">Edit profile</h2>
       <div className="grid gap-3">
@@ -980,12 +999,15 @@ function ProfileEditor({ loadProfile, onSave }:{ loadProfile: ()=>Promise<Profil
         </div>
       </div>
     </div>
-  );
+  </ErrorBoundary>);
 }
 
 function Footer() { return <footer className="text-center text-xs text-neutral-400 py-6">InstaFacts</footer>; }
 
 export default App;
+
+
+
 
 
 
