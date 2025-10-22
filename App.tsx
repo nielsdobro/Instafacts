@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useRef, useState } from "react";
+﻿import React, { useEffect, useRef, useState, useLayoutEffect } from "react";
 import { createClient } from "@supabase/supabase-js";
 
 type Comment = { id: string; userId: string; content: string; createdAt: number; replies: Comment[]; likesUp: string[]; likesDown: string[]; edited?: boolean; };
@@ -39,7 +39,7 @@ type DataLayer = {
 
 function useDataLayer(){
   const [layer,setLayer] = useState<DataLayer|null>(null);
-  useEffect(()=>{
+  useLayoutEffect(()=>{
     let unsub: undefined | (()=>void);
     (async()=>{
       const url = import.meta.env.VITE_SUPABASE_URL as string|undefined;
@@ -97,10 +97,27 @@ async function createSupabaseLayer(supabase:any, adminEmail?:string): Promise<Da
       const { data: comments, error: e2 } = await supabase.from('comments').select('*').in('post_id', postIds).order('created_at',{ascending:true});
       if (e2) throw e2;
       const byPost = new Map<string, Comment[]>();
-      (comments||[]).forEach((c:any)=>{
-        const arr = byPost.get(c.post_id) || [];
-        arr.push({ id:c.id, userId:c.user_id, content:c.content, createdAt:new Date(c.created_at).getTime(), replies:[], likesUp:c.likes_up||[], likesDown:c.likes_down||[], edited: !!c.edited });
-        byPost.set(c.post_id, arr);
+      const byId = new Map<string, (Comment & { postId?: string; parentId?: string|null })>();
+      (comments||[]).forEach((row:any)=>{
+        const m = typeof row.content==="string" && row.content.match(/^\[reply:([^\]]+)\]\s*/);
+
+
+        const parentId = (row.parent_id as string|undefined) || (m? m[1] : null);
+        const content = m? row.content.replace(/^\[reply:[^\]]+\]\s*/,'') : row.content;
+        const c: (Comment & { postId?: string; parentId?: string|null }) = {
+          id:row.id, userId:row.user_id, content, createdAt:new Date(row.created_at).getTime(), replies:[], likesUp:row.likes_up||[], likesDown:row.likes_down||[], edited: !!row.edited,
+          postId: row.post_id, parentId
+        };
+        byId.set(c.id, c);
+      });
+      byId.forEach((c)=>{
+        if (c.parentId && byId.has(c.parentId)) {
+          byId.get(c.parentId)!.replies.push(c);
+        } else {
+          const arr = byPost.get(c.postId!) || [];
+          arr.push(c);
+          byPost.set(c.postId!, arr);
+        }
       });
       return posts.map((p:any)=>({ id:p.id, userId:p.user_id, caption:p.caption, createdAt:new Date(p.created_at).getTime(), media_urls:p.media_urls||[], mediaTypes:p.media_types||[], comments: byPost.get(p.id)||[], likesUp:p.likes_up||[], likesDown:p.likes_down||[], edited: !!p.edited }));
     },
@@ -138,6 +155,16 @@ async function createSupabaseLayer(supabase:any, adminEmail?:string): Promise<Da
       const { error } = await supabase.from('comments').insert({ post_id: postId, user_id: u.id, content });
       if (error) throw error;
     },
+     async addReply({ postId, commentId, content }){
+       const u = await getUser();
+       if (!u) throw new Error("Login required");
+       const withParent:any = { post_id: postId, parent_id: commentId, user_id: u.id, content: `[reply:${commentId}] ${content}` };
+       let { error } = await supabase.from("comments").insert(withParent);
+       if (error) {
+         const { error: e2 } = await supabase.from("comments").insert({ post_id: postId, user_id: u.id, content: `[reply:${commentId}] ${content}` });
+         if (e2) throw e2;
+       }
+     },
     async updatePost({ postId, caption }){
       const { error } = await supabase.from('posts').update({ caption, edited:true }).eq('id', postId);
       if (error) throw error;
@@ -204,6 +231,12 @@ function createLocalLayer(): DataLayer{
     async createPost({ files, caption }){ const urls: string[] = []; const types: ("image"|"video")[] = []; for (const f of files){ if (!f) continue; const isVideo = f.type.startsWith('video'); urls.push(URL.createObjectURL(f)); types.push(isVideo? 'video':'image'); } state.posts = [{ id:uid('p'), userId: state.currentUser?.id||'user_local', caption, createdAt: Date.now(), media_urls: urls, mediaTypes: types, comments:[], likesUp:[], likesDown:[], edited:false }, ...state.posts ]; },
     async addComment({ postId, content }){ state.posts = state.posts.map(p=> p.id===postId? { ...p, comments:[...p.comments, { id:uid('c'), userId: state.currentUser?.id||'user_local', content, createdAt:Date.now(), replies:[], likesUp:[], likesDown:[] } ] } : p ); },
     async updatePost({ postId, caption }){ state.posts = state.posts.map(p=> p.id===postId? { ...p, caption, edited:true } : p ); },
+     async addReply({ postId, commentId, content }){
+       state.posts = state.posts.map(p => {
+         if (p.id !== postId) return p;
+         return { ...p, comments: p.comments.map(cm => cm.id===commentId ? { ...cm, replies:[...cm.replies, { id:uid('rc'), userId: state.currentUser?.id||'user_local', content, createdAt:Date.now(), replies:[], likesUp:[], likesDown:[] }] } : cm) };
+       });
+     },
     async deletePost({ postId }){ state.posts = state.posts.filter(p=>p.id!==postId); },
     async toggleReactPost(){},
     async deleteAllPostsByUser(userId:string){ state.posts = state.posts.filter(p=>p.userId!==userId); },
@@ -545,21 +578,27 @@ function ImageCropperModal({ file, onCancel, onSave }:{ file: File; onCancel:()=
     y = Math.max(minY, Math.min(maxY, y));
     return { x, y };
   };
-  const setScaleKeepingCenter = (next:number) => {
+  const setScaleAt = (fx:number, fy:number, next:number) => {
     if (!frameRef.current || !img) { setScale(next); return; }
     const size = frameRef.current.clientWidth;
     const newScale = Math.max(next, minScale);
-    const cx = size/2; const cy = size/2;
-    const imgCx = (cx - pos.x) / scale;
-    const imgCy = (cy - pos.y) / scale;
-    let nx = cx - imgCx * newScale;
-    let ny = cy - imgCy * newScale;
+    const imgFx = (fx - pos.x) / scale;
+    const imgFy = (fy - pos.y) / scale;
+    let nx = fx - imgFx * newScale;
+    let ny = fy - imgFy * newScale;
     const clamped = clampPosition({ x:nx, y:ny }, size, newScale);
     setScale(newScale);
     setPos(clamped);
   };
+  
+  const setScaleKeepingCenter = (next:number) => {
+    if (!frameRef.current) { setScale(next); return; }
+    const size = frameRef.current.clientWidth;
+    const cx = size/2; const cy = size/2;
+    setScaleAt(cx, cy, next);
+  };
 
-  useEffect(()=>{
+  useLayoutEffect(()=>{
     if(!img || !frameRef.current) return;
     const size = frameRef.current.clientWidth;
     const minS = Math.max(size / img.naturalWidth, size / img.naturalHeight);
@@ -611,18 +650,14 @@ function ImageCropperModal({ file, onCancel, onSave }:{ file: File; onCancel:()=
           className="relative w-full" style={{ paddingTop:'100%' }}
         >
           <div
-            className="absolute inset-0 bg-neutral-900 overflow-hidden cursor-grab active:cursor-grabbing"
-            onMouseDown={startDrag}
-            onMouseMove={onMove}
-            onMouseUp={endDrag}
-            onMouseLeave={endDrag}
+            className="absolute inset-0 bg-neutral-900 overflow-hidden cursor-grab active:cursor-grabbing" onMouseDown={startDrag} onMouseMove={onMove} onMouseUp={endDrag} onMouseLeave={endDrag} onWheel={(e)=>{ e.preventDefault(); if(!frameRef.current) return; const r = frameRef.current.getBoundingClientRect(); const fx = e.clientX - r.left; const fy = e.clientY - r.top; const factor = e.deltaY < 0 ? 1.1 : 0.9; setScaleAt(fx, fy, scale * factor); }} onDoubleClick={(e)=>{ if(!frameRef.current) return; const r = frameRef.current.getBoundingClientRect(); const fx = e.clientX - r.left; const fy = e.clientY - r.top; const target = scale < Math.max(minScale*1.5, minScale + 0.2) ? Math.max(minScale*2, scale*1.5) : minScale; setScaleAt(fx, fy, target); }}
           >
             {!!img && (
               <img
                 src={url}
                 alt="Crop"
                 draggable={false}
-                style={{ position:'absolute', left: pos.x, top: pos.y, width: img.naturalWidth*scale, height: img.naturalHeight*scale, userSelect:'none' }}
+                style={{ position:'absolute', left: 0, top: 0, width: img?.naturalWidth||0, height: img?.naturalHeight||0, transform: "translate(" + pos.x + "px, " + pos.y + "px) scale(" + scale + ")", transformOrigin:'top left', userSelect:'none' }}
               />
             )}
           </div>
@@ -706,18 +741,20 @@ function PostReactionsOverlay({ upActive, downActive, onUp, onDown, disabled }:{
 function ThumbUpIcon(){return (<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 9V5a3 3 0 0 0-3-3l-3 8v10h9a3 3 0 0 0 3-3v-4a3 3 0 0 0-3-3h-3z"/></svg>);} 
 function ThumbDownIcon(){return (<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10 15v4a3 3 0 0 0 3 3l3-8V4H7a3 3 0 0 0-3 3v4a3 3 0 0 0 3 3h3z"/></svg>);} 
 
-function CommentBlock({ c, user, postId, onAddReply, isAuthed }:{ c: Comment, user:{ id:string, username:string }, postId:string, onAddReply?:(postId:string, commentId:string, content:string)=>void, isAuthed:boolean }){
+function CommentBlock({ c, user, postId, getUser, onAddReply, isAuthed }:{ c: Comment, user:{ id:string, username:string }, postId:string, getUser?:(id:string)=>Promise<Profile|null|undefined>, onAddReply?:(postId:string, commentId:string, content:string)=>void, isAuthed:boolean }){
+  const [author,setAuthor] = useState<{id:string;username:string}>(user);
+  useEffect(()=>{ let alive=true; if(getUser){ Promise.resolve(getUser(user.id)).then(p=>{ if(alive && p?.username){ setAuthor({ id:user.id, username:p.username }); } }); } return ()=>{ alive=false }; },[user.id, getUser]);
   const [replyOpen, setReplyOpen] = useState(false);
   const [reply, setReply] = useState('');
   const submitReply = ()=>{ if(!onAddReply || !isAuthed) return; if(!reply.trim()) return; onAddReply(postId, c.id, reply.trim()); setReply(''); setReplyOpen(false); };
   return (
     <div className="flex items-start gap-2 bg-neutral-100 rounded-xl p-3">
       <div className="w-8 h-8 rounded-full bg-gradient-to-br from-pink-500 to-purple-600 text-white flex items-center justify-center text-xs font-bold">
-        {user.username[0]?.toUpperCase()||'?'}
+        {author.username[0]?.toUpperCase()||'?'}
       </div>
       <div className="flex-1">
         <div className="flex items-center gap-2">
-          <span className="font-medium text-sm">{user.username}</span>
+          <span className="font-medium text-sm">{author.username}</span>
           {c.edited && <span className="text-xs text-neutral-400">(edited)</span>}
           <span className="text-xs text-neutral-400 ml-auto">{new Date(c.createdAt).toLocaleString()}</span>
         </div>
@@ -732,6 +769,13 @@ function CommentBlock({ c, user, postId, onAddReply, isAuthed }:{ c: Comment, us
           </div>
         )}
       </div>
+        {(c.replies||[]).length>0 && (
+          <div className="mt-2 pl-10 grid gap-2">
+            {c.replies.map(rc => (
+              <CommentBlock key={rc.id} c={rc} user={{ id: rc.userId, username: rc.userId }} postId={postId} getUser={getUser} onAddReply={onAddReply} isAuthed={isAuthed} />
+            ))}
+          </div>
+        )}
     </div>
   );
 }
@@ -833,7 +877,7 @@ function PostCard({ post, getUser, isAuthed, currentUserId, onAddComment, onReac
             {hidden>0 && !expanded && <button className="text-sm text-neutral-600 hover:underline" onClick={()=>setExpanded(true)}>Show more comments ({hidden})</button>}
             <div className="mt-2 grid gap-3">
               {shown.map(c=> (
-                <CommentBlock key={c.id} c={c} user={{ id:c.userId, username:c.userId }} />
+                <CommentBlock key={c.id} c={c} user={{ id:c.userId, username:c.userId }} postId={post.id} getUser={getUser} onAddReply={onAddReply} isAuthed={isAuthed} />
               ))}
             </div>
             {expanded && hidden>0 && <button className="mt-2 text-sm text-neutral-600 hover:underline" onClick={()=>setExpanded(false)}>Show less</button>}
@@ -942,6 +986,7 @@ function ProfileEditor({ loadProfile, onSave }:{ loadProfile: ()=>Promise<Profil
 function Footer() { return <footer className="text-center text-xs text-neutral-400 py-6">InstaFacts</footer>; }
 
 export default App;
+
 
 
 
