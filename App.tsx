@@ -159,14 +159,17 @@ async function createSupabaseLayer(supabase:any, adminEmail?:string): Promise<Da
       for (const file of files){
         if (!file) continue;
         const isVideo = file.type.startsWith('video');
-        const path = `${u.id}/${Date.now()}_${idx++}.${isVideo? (file.name.split('.').pop()||'mp4') : (file.name.split('.').pop()||'jpg')}`;
+        const ext = (file.name.split('.').pop()||'').toLowerCase();
+        const safeExt = ext || (isVideo? 'mp4' : 'jpg');
+        const path = `${u.id}/${Date.now()}_${idx++}.${safeExt}`;
         const { error: upErr } = await supabase.storage.from(bucket).upload(path, file, { upsert: false });
         if (upErr) throw upErr;
         const { data } = supabase.storage.from(bucket).getPublicUrl(path);
         media_urls.push(data.publicUrl);
         media_types.push(isVideo? 'video':'image');
       }
-      const { error } = await supabase.from('posts').insert({ caption, media_urls, media_types });
+      // Include user_id for RLS policies and data integrity
+      const { error } = await supabase.from('posts').insert({ user_id: u.id, caption, media_urls, media_types });
       if (error) throw error;
     },
     async addComment({ postId, content }){
@@ -622,7 +625,14 @@ function LoginCard({ onSignIn, onSignUp }:{ onSignIn:(p:{identifier:string,passw
           </div>
         )}
 
-        <textarea className="w-full border border-neutral-300 rounded-xl px-3 py-2 text-sm" rows={3} placeholder="Write a caption..." value={caption} onChange={e=>setCaption(e.target.value)} />
+        <textarea
+          className="w-full border border-neutral-300 rounded-xl px-3 py-2 text-sm"
+          rows={3}
+          placeholder="Write a caption..."
+          value={caption}
+          onChange={e=>setCaption(e.target.value)}
+          onKeyDown={e=>{ if((e.ctrlKey||e.metaKey) && e.key==='Enter'){ e.preventDefault(); submit(); } }}
+        />
         <button onClick={submit} disabled={!files.length && !caption.trim()} className={classNames('px-4 py-2 rounded-xl text-sm', (!files.length && !caption.trim())? 'bg-neutral-200 text-neutral-500':'bg-neutral-900 text-white')}>Share</button>
       </div>
 
