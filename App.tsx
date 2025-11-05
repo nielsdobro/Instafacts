@@ -31,7 +31,7 @@ function useToast(){ const [toast, setToast] = useState<string|null>(null); cons
 function Toast({ msg }:{ msg:string }){ return <div className="fixed top-3 left-1/2 -translate-x-1/2 bg-neutral-900 text-white px-4 py-2 rounded-xl shadow z-50">{msg}</div>; }
 
 // Bump this each time App.tsx changes (for cache-busting on Vercel)
-const APP_VERSION = 'v1.0';
+const APP_VERSION = 'v1.1';
 const CSV_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vQc1EVO1dFWIma7UludbVlUJzqPhpvph_2tCelMfHu3P5SBgcnOAfi8c2gzwnqi8eDyNcXN3-sFeCgp/pub?output=csv';
 
 type Profile = { id: string; username: string; bio?: string; email?: string };
